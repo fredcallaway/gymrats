@@ -251,6 +251,47 @@ class SearchAgent(PlanAgent):
         if model is None:
             model = TrueModel(env)
         self.model = model
+        self.memory = memory
+        self.last_state = None
+
+    def reward(self, s0, a, s1, r):
+        return r
+
+    def update(self, s0, a, s1, r, done):
+        if self.memory:
+            # TODO longer memory (should take into account recency of
+            # a repeated state).
+            self.last_state = s0
+
+    def make_plan(self, state):
+        def eval_path(path):
+            # Choose path with greatest reward. In case of a tie, prefer the path
+            # that takes you to unexplored territory. If no such path exists,
+            # don't go back to the state you were at previously.
+            reward = sum((self.reward(*node[1:])) * self.discount ** i
+                         for i, node in enumerate(path))
+            num_new = sum(node.s1 not in self.explored for node in path)
+            not_backwards = all(node.s1 != self.last_state for node in path)
+            return (reward, num_new, not_backwards)
+        import ipdb, time; ipdb.set_trace(); time.sleep(0.5)
+        path = max(self.model.paths(state, depth=self.depth), key=eval_path)
+        return (node.a for node in path)
+
+
+class PseudoAgent(PlanAgent):
+    """Searches for the maximum reward path using a model."""
+
+    def __init__(self, env, depth=None, model=None, 
+                 pseudo_freq=0, pseudo_mode='full', pseudo_weight=1, pseudo_rewards=None,
+                 V=None, memory=False, replan=False, **kwargs):
+        super().__init__(env, replan=replan, **kwargs)
+        if depth is None:
+            depth = -1  # infinite depth
+        self.depth = depth
+
+        if model is None:
+            model = TrueModel(env)
+        self.model = model
 
         if pseudo_rewards:
             self.pseudo_rewarder = PrecomputedPseudoRewarder(pseudo_rewards)
