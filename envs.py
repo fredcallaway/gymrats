@@ -33,19 +33,12 @@ Result = namedtuple('Result', ['p', 's1', 'r', 'done'])
 class GridEnv(DiscreteEnv):
     """A rectangluar grid with random negative rewards and one goal state."""
     def __init__(self, n_col=10, n_row=10, start=(0, 0), goal=None):
-        M = self.grid = np.random.randint(-9, 0, size=n_row * n_col).reshape(n_row, n_col)
+        self.grid = np.random.randint(-9, 0, size=n_row * n_col).reshape(n_row, n_col)
         self.n_col = n_col
         self.n_row = n_row
 
-        n_actions = 4
-        n_states = n_row * n_col
-        goal = (n_row - 1, n_col - 1)
-
-        initial_state = np.zeros_like(M)
-        initial_state[start] = 1.0
-
-        # transition = {s : {a : [] for a in range(n_actions)} for s in range(n_states)}
-
+        goal = goal if goal else (n_row - 1, n_col - 1)
+        self.grid[goal] = 0
 
         def results(s0, a):
             if s0 == goal:
@@ -61,19 +54,19 @@ class GridEnv(DiscreteEnv):
             elif a == LEFT:
                 col = max(col-1,0)
             
-            s1 = self.encode(row, col)
             r = self.grid[row, col]
-            done = True if r > 0 else False
+            done = True if r >= 0 else False
+            s1 = self.encode(row, col)
             return [Result(1.0, s1, r, done)]
+
+
+        n_actions = 4
+        n_states = n_row * n_col
+        initial_state = np.zeros_like(self.grid)
+        initial_state[start] = 1.0
 
         transition = {s0: {a: results(s0, a) for a in range(n_actions)}
                       for s0 in range(n_states)}
-
-        # for s0 in range(n_states):
-            # for a in range(n_actions):
-                # results = list(map(reformat_result, results((row,col), a)))
-                # transition[s0][a] = results(s0, a)
-
 
         super().__init__(n_states, n_actions, transition, initial_state)
 
@@ -300,7 +293,7 @@ class MazeEnv(DiscreteEnv):
             with open(spec) as f:
                 spec = json.load(f)
         elif spec in self._specs:
-            spce = self._specs[spec]
+            spec = self._specs[spec]
         else:
             raise ValueError('Bad spec: {}'.format(spec))
 

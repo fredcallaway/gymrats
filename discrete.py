@@ -241,7 +241,6 @@ class SearchAgent(PlanAgent):
     """Searches for the maximum reward path using a model."""
 
     def __init__(self, env, depth=None, model=None, 
-                 pseudo_freq=0, pseudo_mode='full', pseudo_weight=1, pseudo_rewards=None,
                  V=None, memory=False, replan=False, **kwargs):
         super().__init__(env, replan=replan, **kwargs)
         if depth is None:
@@ -273,7 +272,6 @@ class SearchAgent(PlanAgent):
             num_new = sum(node.s1 not in self.explored for node in path)
             not_backwards = all(node.s1 != self.last_state for node in path)
             return (reward, num_new, not_backwards)
-        import ipdb, time; ipdb.set_trace(); time.sleep(0.5)
         path = max(self.model.paths(state, depth=self.depth), key=eval_path)
         return (node.a for node in path)
 
