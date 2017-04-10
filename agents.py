@@ -4,7 +4,7 @@ from collections import namedtuple, defaultdict, Counter, deque
 import numpy as np
 from abc import ABC, abstractmethod
 import utils
-
+import time
 np.set_printoptions(precision=3, linewidth=200)
 
 
@@ -126,6 +126,10 @@ class Agent(ABC):
             utils.clear_screen()
             self.env.render()
         elif mode == 'clear':
+            utils.clear_screen()
+            self.env.render()
+        elif mode == 'auto':
+            time.sleep(.3)
             utils.clear_screen()
             self.env.render()
         elif mode:

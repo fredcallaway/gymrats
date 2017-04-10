@@ -323,7 +323,7 @@ class MazeEnv(DiscreteEnv):
     metadata = {'render.modes': ['human', 'ansi', 'step']}
 
 
-    def __init__(self, spec, is_slippery=True):
+    def __init__(self, spec='maze_19_1.json', is_slippery=True):
         if spec.endswith('.json'):
             with open(spec) as f:
                 spec = json.load(f)
@@ -383,9 +383,6 @@ class MazeEnv(DiscreteEnv):
     def _render(self, mode='human', close=False):
         if close:
             return
-        # if mode == 'step':
-            # input('> ')
-            # clear_screen()
         outfile = StringIO() if mode == 'ansi' else sys.stdout
         row, col = self.s // self.n_col, self.s % self.n_col
         

@@ -1,4 +1,4 @@
-
+from IPython.display import clear_output
 
 def join(*args, sep=' '):
     return sep.join(map(str, args))
@@ -32,6 +32,7 @@ def logged(condition=lambda r: True):
 
 def clear_screen():
     print(chr(27) + "[2J")
+    clear_output()
 
 
 def show_path(env, actions, state=None, render='step'):
