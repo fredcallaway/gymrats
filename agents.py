@@ -1,12 +1,11 @@
+"""Agents that operate in discrete fully observable environments."""
+
 from collections import namedtuple, defaultdict, Counter, deque
 import numpy as np
 from abc import ABC, abstractmethod
 import utils
 
 np.set_printoptions(precision=3, linewidth=200)
-MAX_STEPS = 1000
-API_KEY = 'sk_R6mkDKdZTMC3deGMZi1Slg'
-
 
 
 # ========================== #
@@ -14,27 +13,51 @@ API_KEY = 'sk_R6mkDKdZTMC3deGMZi1Slg'
 # ========================== #
 
 class Agent(ABC):
-    """An agent that can run openai gym environments."""
+    """An agent that can run on  discrete openai gym environments.
+
+    All agents inherit from this abstract base class (which itself cannot be
+    instantiated). A class implementing Agent must override act. Any learning
+    algorithm (e.g. Sarsa) will also implement update."""
     def __init__(self, env, discount=0.99):
         self.env = env
         self.i_episode = 0
-        self.explored = set()
         self.discount = discount
 
         self.n_states = env.observation_space.n
         self.n_actions = env.action_space.n
 
-    @abstractmethod
+    @abstractmethod  # all subclases must implement this method
     def act(self, state):
+        """Returns an action to take in the given state.
+
+        A state is an int between 0 and self.n_states
+        An action is an int between 0 and self.n_actions.
+        """
         pass
 
     def update(self, state, action, new_state, reward, done):
+        """Learn from the results of taking action in state.
+
+        state: state in which action was taken.
+        action: action taken.
+        new_state: the state reached after taking action.
+        reward: reward received after taking action.
+        done: True if the episode is complete.
+        """
         pass
 
     def start_episode(self, state):
+        """This function is run once when an episode begins, starting at state.
+
+        This can be used to e.g. to initialize episode-specific memory as necessary
+        for n-step TD learning."""
         pass
 
-    def run_episode(self, render=False, max_steps=1000, interact=False):
+    def run_episode(self, render=False, max_steps=1000, interact=False,
+                    verbose=False):
+        """Runs a single episode, returns a complete trace of the episode."""
+        self.log = print if verbose else (lambda *args: None)
+
 
         if interact:
             render = 'human'
@@ -52,9 +75,8 @@ class Agent(ABC):
         done = False
         for i_step in range(max_steps):
             state = new_state
-            self.explored.add(state)
 
-            self.render(render)
+            self._render(render)
 
             if interact:
                 cmd = input('> ') or last_cmd
@@ -73,7 +95,7 @@ class Agent(ABC):
 
             if done:
                 trace['finished'] = True
-                self.render(render)
+                self._render(render)
                 break
 
         trace['states'].append(new_state)  # final state
@@ -81,18 +103,8 @@ class Agent(ABC):
         trace['return'] = sum(trace['rewards'])   # TODO discounting
         return trace
 
-    def render(self, mode):
-        if mode == 'step':
-            input('> ')
-            utils.clear_screen()
-            self.env.render()
-        elif mode == 'clear':
-            utils.clear_screen()
-            self.env.render()
-        elif mode:
-            self.env.render(mode=mode)
-
     def run_many(self, n_episodes, **kwargs):
+        """Runs several episodes, returns a summary of results."""
         data = {
             'i_episode': [],
             'n_steps': [],
@@ -107,6 +119,17 @@ class Agent(ABC):
             data['finished'].append(trace['finished'])
 
         return data
+
+    def _render(self, mode):
+        if mode == 'step':
+            input('> ')
+            utils.clear_screen()
+            self.env.render()
+        elif mode == 'clear':
+            utils.clear_screen()
+            self.env.render()
+        elif mode:
+            self.env.render(mode=mode)
 
 
 class RandomAgent(Agent):
@@ -162,33 +185,143 @@ class HumanAgent(Agent):
         return ch
 
 
-class QLearningAgent(Agent):
+class _QLearningAgent(Agent):
     """Learns expected values of taking an action in a state."""
-    def __init__(self, env, penalty=0, learn_rate=.85, discount=.99):
+    def __init__(self, env, learn_rate=.85, discount=.99, epsilon=.5, anneal=.99,
+                 exploration='epsilon'):
         super().__init__(env, discount=discount)
-        self.penalty = penalty
         self.learn_rate = learn_rate
-        self.discount = discount    
+        self.epsilon = epsilon
+        self.anneal = anneal
+        self.exploration = exploration
 
         # Q is a table of estimated values for taking an action in a state. It
         # incorporates the direct reward as well as expected future reward.
-        self.Q = np.zeros((env.observation_space.n, env.action_space.n))
+        self.Q = np.zeros((self.n_states, self.n_actions))
 
     @property
     def V(self):
         return np.max(self.Q, axis=1)
 
     def act(self, state):
-        noise = np.random.randn(self.Q.shape[1]) / (1 + self.i_episode)
-        return np.argmax(self.Q[state] + noise)
+        if self.exploration:
+            epsilon = self.epsilon * self.anneal ** self.i_episode
+            if self.exploration == 'epsilon':
+                if np.random.rand() < epsilon:
+                    return np.random.randint(self.n_actions)
+                else:
+                    noise = np.random.randn(self.Q.shape[1]) * .001
+                    return np.argmax(self.Q[state] + noise)
+
+            elif self.exploration == 'noise':
+                noise = np.random.randn(self.Q.shape[1]) * epsilon
+                return np.argmax(self.Q[state] + noise)
 
     def update(self, s0, a, s1, r, done):
-        if done and not r:
-            r = - abs(self.penalty)
-
         # Update Q table.
         learned_value = r + self.discount * np.max(self.Q[s1])
         self.Q[s0, a] += self.learn_rate * (learned_value - self.Q[s0, a])
+
+
+
+class Policy(ABC):
+    """Chooses actions."""
+    def __init__(self, env, epsilon=0, anneal=1):
+        self.env = env
+        self.epsilon = epsilon
+        self.anneal = anneal
+
+    @abstractmethod
+    def __call__(self, state):
+        """Returns an action to take in a given state."""
+        pass
+
+
+class MaxQPolicy(Policy):
+    """Chooses the action with highest Q value."""
+    def __init__(self, env, Q, **kwargs):
+        super().__init__(env, **kwargs)
+        self.Q = Q
+
+    def __call__(self, state, anneal_step=0):
+        epsilon = self.epsilon * self.anneal ** anneal_step
+        if np.random.rand() < epsilon:
+            return np.random.randint(self.env.n_actions)
+        else:
+            noise = np.random.randn(self.Q.shape[1]) * .001
+            return np.argmax(self.Q[state] + noise)
+
+
+class QLearningAgent(Agent):
+    """Learns expected values of taking an action in a state."""
+    def __init__(self, env, learn_rate=1, discount=1, 
+                 policy=MaxQPolicy, policy_kws=dict(epsilon=0.5, anneal=.99)):
+        super().__init__(env, discount=discount)
+        self.learn_rate = learn_rate
+
+        # Q is a table of estimated values for taking an action in a state. It
+        # incorporates the direct reward as well as expected future reward.
+        self.Q = np.zeros((self.n_states, self.n_actions))
+        self.policy = policy(env, self.Q, **policy_kws)
+
+    @property
+    def V(self):
+        return np.max(self.Q, axis=1)
+
+    def act(self, state):
+        return self.policy(state, self.i_episode)
+
+    def update(self, s0, a, s1, r, done):
+        # Update Q table.
+        learned_value = r + self.discount * np.max(self.Q[s1])
+        self.Q[s0, a] += self.learn_rate * (learned_value - self.Q[s0, a])
+
+
+class NstepSarsa(QLearningAgent):
+    """7.2 in Sutton and Barto"""
+    def __init__(self, env, nstep=1, **kwargs):
+        super().__init__(env, **kwargs)
+        self.nstep = nstep
+
+    def start_episode(self, state):
+        self.memory = deque(maxlen=self.nstep)
+
+    def update(self, s0, a, s1, r, done):
+        self.log('update', s0, a)
+        self.log('  memory', list(self.memory))
+
+        def update(s_t, a_t, finished=False):
+            # value is G in Sutton p. 157
+            rewards = sum(m[2] * self.discount ** i for i, m in enumerate(self.memory))
+            future_value = rewards + (self.discount ** self.nstep) * self.Q[s0, a]
+            if finished:
+                value = rewards
+                self.log('Q{} = {}'.format((s_t, a_t), rewards))
+            else:
+                value = rewards + future_value
+                self.log('Q{} = {} + Q{} = {}'.format((s_t, a_t), rewards, (s0, a), value))
+
+            self.Q[s_t, a_t] += self.learn_rate * (value - self.Q[s_t, a_t])
+
+        if len(self.memory) == self.nstep:
+            s_t, a_t, _ = self.memory[0]
+            update(s_t, a_t)
+        
+        self.memory.append((s0, a, r))
+
+        if done:
+            self.log('finish remaining')
+            while self.memory:
+                s_t, a_t, _ = self.memory[0]
+                update(s_t, a_t, finished=True)
+                self.memory.popleft()
+
+
+
+
+
+
+        
 
 
 class SarsaAgent(QLearningAgent):
@@ -198,8 +331,6 @@ class SarsaAgent(QLearningAgent):
         self.last_sar = None
 
     def update(self, state, action, new_state, reward, done):
-        if done and not reward:
-            reward = - abs(self.penalty)
 
         # We update the action at the last time step based on 
         # the outcome of this time step.
@@ -217,6 +348,8 @@ class SarsaAgent(QLearningAgent):
             self.Q[s1, a1] += self.learn_rate * (learned_value - self.Q[s1, a1])
 
         self.last_sar = (state, action, reward)
+
+
 
 
 class PlanAgent(Agent):
@@ -252,9 +385,14 @@ class SearchAgent(PlanAgent):
         self.model = model
         self.memory = memory
         self.last_state = None
+        self.explored = set()
 
     def reward(self, s0, a, s1, r):
         return r
+
+    def act(self, s0):
+        self.explored.add(s0)
+        return super().act(s0)
 
     def update(self, s0, a, s1, r, done):
         if self.memory:
@@ -517,7 +655,7 @@ class PrioritizedSweeping(ModelBasedAgent):
             self.value_change[s_pred] = max(self.value_change[s_pred], change)  # TODO weight by transition prob
 
 
-def value_iteration(env, discount=0.99, epsilon=0.001, max_iters=100000):
+def value_iteration(env, discount=.999, epsilon=0.001, max_iters=100000):
     """Returns the optimal value table for env."""
     V1 = np.zeros(env.observation_space.n)
 
@@ -547,6 +685,22 @@ def value_iteration(env, discount=0.99, epsilon=0.001, max_iters=100000):
 
     print('NOT CONVERGED')
     return V
+
+
+
+def v_to_q(env, V):
+    
+    def rval(result):
+        p, s1, r, _ = result
+        return p * (r + V[s1])
+    
+    def qval(s, a):
+        return sum(rval(result) for result in env.P[s][0])
+    
+    Q = np.array([[qval(s, a) for a in range(env.n_actions)]
+                  for s in range(env.n_states)])
+    return Q
+
 
 
 

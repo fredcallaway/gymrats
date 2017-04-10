@@ -29,6 +29,41 @@ GOAL = 2
 Result = namedtuple('Result', ['p', 's1', 'r', 'done'])
 
 
+class LinearEnv(DiscreteEnv):
+    """Environment in Sutton and Barto Example 6.2"""
+    def __init__(self, n_states=7, reward=1, penalty=0, slip=0):
+        self.n_states = n_states
+        self.n_actions = n_actions = 2
+        self.reward = reward
+        self.penalty = penalty
+
+        def results(s0, a):
+            if s0 in (0, self.n_states-1):
+                return [Result(1, 0, 0, True)]
+            s1 = s0 + [-1, 1][a]
+            if s1 == 0:
+                yield Result(1-slip, s1, penalty, True)
+            elif s1 == n_states - 1:
+                yield Result(1-slip, s1, reward, True)
+            elif (0 < s1 < self.n_states):
+                yield Result(1-slip, s1, 0, False)
+
+            if slip:
+                s1 = s0 + [1, -1][a]
+                if s1 == 0:
+                    yield Result(slip, s1, penalty, True)
+                elif s1 == n_states - 1:
+                    yield Result(slip, s1, reward, True)
+                else:
+                    yield Result(slip, s1, 0, False)
+
+        initial_state = np.zeros(n_states)
+        initial_state[n_states // 2] = 1.0
+        transition = {s0: {a: list(results(s0, a)) for a in range(n_actions)}
+                      for s0 in range(n_states)}
+
+        super().__init__(self.n_states, self.n_actions, transition, initial_state)
+
 
 class GridEnv(DiscreteEnv):
     """A rectangluar grid with random negative rewards and one goal state."""
