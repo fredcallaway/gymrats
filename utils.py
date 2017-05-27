@@ -4,12 +4,14 @@ def join(*args, sep=' '):
     return sep.join(map(str, args))
 
 
-def run_episode(agent, env, max_steps=500):
+def run_episode(agent, env, max_steps=500, render=False):
     observation = env.reset()
     score = 0
 
     for _ in range(max_steps):
         action = agent.act(observation)
+        if render:
+            env.render()
         observation, reward, done, info = env.step(action)
         score += reward
         if done:

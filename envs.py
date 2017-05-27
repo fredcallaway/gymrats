@@ -7,6 +7,7 @@ import itertools as it
 import json
 
 import gym
+from gym import spaces
 from gym.envs.toy_text.discrete import DiscreteEnv
 from scipy.stats.distributions import bernoulli, norm
 
@@ -27,6 +28,136 @@ GOAL = 2
 # r: reward
 # done: True if the episode is over else False
 Result = namedtuple('Result', ['p', 's1', 'r', 'done'])
+
+
+class ForageWorld(gym.Env):
+    """Gather berries."""
+    metadata = {'render.modes': ['human']}
+    def __init__(self, size, n_berry, time_cost=.01):
+        self.size = size
+        self.n_berry = n_berry
+        self.time_cost = time_cost
+        self.feature_space = (size, size, n_berry+1)
+        self.observation_space = spaces.Discrete(np.product(self.feature_space))
+        self.action_space = spaces.Discrete(4)
+        self.done = False
+
+    def _reset(self):
+        initial = (self.size//2,) * 2
+        locs = set()
+        while len(locs) < self.n_berry:
+            loc = tuple(np.random.randint(0, self.size, size=2).tolist())
+            if loc in ((0,0), initial):
+                continue
+            locs.add(loc)
+        self.berry_locs = {l: i for i, l in enumerate(locs)}
+        self._state = (*initial, set())
+        return self._observe(self._state)
+
+    def _observe(self, state):
+        row, col, collected = state
+        return row, col, len(collected)
+
+    def _step(self, a):
+        if self.done:
+            return self._observe(self._state), 0, True, {}
+        row, col, collected = self._state
+
+        if a == UP:
+            row = max(row-1, 0)
+        elif a == RIGHT:
+            col = min(col+1, self.size-1)
+        elif a == DOWN:
+            row = min(row+1, self.size-1)
+        elif a == LEFT:
+            col = max(col-1,0)
+
+        berry = self.berry_locs.get((row, col))
+        if berry is not None and berry not in collected:
+            collected |= {berry}
+        self._state = (row, col, collected)
+
+        done = True if (row, col) == (0, 0) else False
+        if done:
+            reward = len(collected)
+            self.done = True
+        else:
+            reward = - abs(self.time_cost)
+
+        return self._observe(self._state), reward, done, {}
+
+    def _render(self, mode='human', close=False):
+        if close:
+            return
+        row, col, collected = self._state
+
+        out = [[' '] * self.size for _ in range(self.size)]
+        for (x,y), i in self.berry_locs.items():
+            if i in collected:
+                out[x][y] = 'x'
+            else:
+                out[x][y] = 'O'
+        out[row][col] = '*'
+        out[0][0] = '#'
+        print('\n'.join(''.join(line) for line in out))
+
+
+
+    # def encode(x):
+    #     s = 0
+    #     for f, n in zip(x, fs):
+    #         s *= n
+    #         s += f
+    #     return s
+            
+    # def decode(s):
+    #     x = []
+    #     for n in reversed(fs):
+    #         x.append(s % n)
+    #         s //= n
+    #     return tuple(reversed(x))
+        # super().__init__()
+
+# class ForageWorld(DiscreteEnv):
+#     """Gather berries."""
+#     def __init__(self, size, n_berry, time_cost):
+#         self.feature_space = (size, size, *(1,) * n_berry)
+
+
+#         def results(s0, a):
+#             row, col, nb = self.decode(s0)
+
+#             if a == UP:
+#                 row = max(row-1, 0)
+#             elif a == RIGHT:
+#                 col = min(col+1, size-1)
+#             elif a == DOWN:
+#                 row = min(row+1, size-1)
+#             elif a == LEFT:
+#                 col = max(col-1,0)
+            
+#             r = self.grid[row, col]
+#             done = True if r >= 0 else False
+#             s1 = self.encode(row, col)
+#             return [Result(1.0, s1, r, done)]
+
+
+#     def encode(x):
+#         s = 0
+#         for f, n in zip(x, fs):
+#             s *= n
+#             s += f
+#         return s
+            
+#     def decode(s):
+#         x = []
+#         for n in reversed(fs):
+#             x.append(s % n)
+#             s //= n
+#         return tuple(reversed(x))
+#         # super().__init__()
+
+
 
 
 class LinearEnv(DiscreteEnv):

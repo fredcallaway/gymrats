@@ -136,160 +136,149 @@ class Agent(ABC):
             self.env.render(mode=mode)
 
 
-class TDLambdaV(object):
-    """Learns a linear value function with TD lambda."""
-    def __init__(self, env, learn_rate=.1, decay=0):
-        self.env = env
-        self.learn_rate = learn_rate
-        self.shape = len(self.features(0))
-        self.decay = decay
-        self.theta = np.zeros(self.shape)
-        self.trace = np.zeros(self.shape)
-
-    def features(self, s):
-        x = [0] * self.env.nS
-        x[s] = 1
-        return x
-        return self.env.decode(s)
-
-    def update(self, s, v):
-        x = self.features(s)
-        vhat = x @ self.theta
-        error = v - vhat
-        self.trace = self.decay * self.trace + x
-        self.theta += self.learn_rate * error * self.trace
-
-    def predict(self, s):
-        x = self.features(s)
-        return x @ self.theta
-
-    def to_array(self):
-        return np.array([self.predict(s) for s in range(self.env.nS)])
-
-    __call__ = predict
-
-
-
-class PlanAgent(Agent):
-    """An Agent with a plan."""
-    def __init__(self, env, replan=False, **kwargs):
-        super().__init__(env, **kwargs)
-        self.replan = replan
-        self.plan = iter([])
-
+class RandomAgent(Agent):
+    """A not-too-bright Agent."""
+    def __init__(self, env):
+        super().__init__(env)
+    
     def act(self, state):
-        try:
-            if self.replan:
-                raise StopIteration()
-            else:
-                return next(self.plan)
-        except StopIteration:
-            self.plan = iter(self.make_plan(state))
-            return next(self.plan)
+        return self.env.action_space.sample()
+      
 
+class HumanAgent(Agent):
+    """Keyboard controlled agent."""
+    def __init__(self, env, actions=None):
+        super().__init__(env)
+        if not actions:
+            actions = list(map(str, range(env.nA)))
+        self.actions = dict(zip(actions, range(len(actions))))
 
-
-
-class SearchAgent(PlanAgent):
-    """Searches for the maximum reward path using a model."""
-
-    def __init__(self, env, depth=None, model=None, 
-                 V=None, memory=False, replan=False, **kwargs):
-        super().__init__(env, replan=replan, **kwargs)
-        if depth is None:
-            depth = -1  # infinite depth
-        self.depth = depth
-
-        if model is None:
-            model = TrueModel(env)
-        self.model = model
-        self.memory = memory
-        self.last_state = None
-        self.explored = set()
-        self.V = TDLambdaV(env)
-
-    def reward(self, s0, a, s1, r):
-        return r
-
-    def act(self, s0):
-        self.explored.add(s0)
-        return super().act(s0)
+    def run_episode(self, **kwargs):
+        # kwargs['render'] = 'clear'
+        # kwargs['render'] = 'human'
+        return super().run_episode(**kwargs)
 
     def update(self, s0, a, s1, r, done):
-        target = r + self.discount * self.V(s1)
-        self.V.update(s0, target)
-        if self.memory:
-            # TODO longer memory (should take into account recency of
-            # a repeated state).
-            self.last_state = s0
-
-    def make_plan(self, state):
-        def eval_path(path):
-
-            # Choose path with greatest reward. In case of a tie, prefer the path
-            # that takes you to unexplored territory. If no such path exists,
-            # don't go back to the state you were at previously.
-            path = tuple(path)
-            reward = sum(node.r * self.discount ** i
-                         for i, node in enumerate(path))
-            if not path[-1].done:
-                reward += self.V(path[-1].s1)
-
-            num_new = sum(node.s1 not in self.explored for node in path)
-            not_backwards = all(node.s1 != self.last_state for node in path)
-            return (reward, num_new, not_backwards)
-        path = max(self.model.paths(state, depth=self.depth), key=eval_path)
-        return (node.a for node in path)
+        msg = utils.join(s0, a, s1, r, done)
+        print(msg)
 
 
+    def act(self, state):
+        char = None
+        while True:
+            print('> ', end='', flush=True)
+            char = self.read_char()
+            if char == 'd':
+                print('Exiting.')
+                exit()
+            if char in self.actions:
+                return self.actions[char]
+            else:
+                print('Actions: ', ' '.join(map(str, self.actions)), '(d to exit)')
+
+    @staticmethod
+    def read_char():
+        import tty, sys, termios
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(sys.stdin.fileno())
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return ch
 
 
-class LinearQ(object):
-    """Learns a linear Q function by SGD."""
-    def __init__(self, shape, learn_rate=.1):
-        self.shape = shape
-        self.learn_rate = learn_rate
-        self.theta = np.random.random(self.shape)
-
-    def update(self, x, y):
-        yhat = x @ self.theta
-        error = y - yhat
-        self.theta += self.learn_rate * np.outer(x, error)
-
-    def predict(self, x):
-        return x @ self.theta
-
-    __call__ = predict
-
-
-class QLearningAgent(Agent):
+class _QLearningAgent(Agent):
     """Learns expected values of taking an action in a state."""
     def __init__(self, env, learn_rate=.85, discount=.99, epsilon=.5, anneal=.99,
                  exploration='epsilon'):
         super().__init__(env, discount=discount)
+        self.learn_rate = learn_rate
         self.epsilon = epsilon
         self.anneal = anneal
         self.exploration = exploration
-        shape = (len(env.decode(0)), env.nA)
-        self.Q = LinearQ(shape, learn_rate)
+
+        # Q is a table of estimated values for taking an action in a state. It
+        # incorporates the direct reward as well as expected future reward.
+        self.Q = np.zeros((self.n_states, self.n_actions))
+
+    @property
+    def V(self):
+        return np.max(self.Q, axis=1)
 
     def act(self, state):
         if self.exploration:
             epsilon = self.epsilon * self.anneal ** self.i_episode
-            if self.exploration == 'epsilon' and np.random.rand() < epsilon:
-                return np.random.randint(self.Q.shape[1])
+            if self.exploration == 'epsilon':
+                if np.random.rand() < epsilon:
+                    return np.random.randint(self.n_actions)
+                else:
+                    noise = np.random.randn(self.Q.shape[1]) * .001
+                    return np.argmax(self.Q[state] + noise)
 
             elif self.exploration == 'noise':
                 noise = np.random.randn(self.Q.shape[1]) * epsilon
-                return np.argmax(self.Q(state) + noise)
-
-        noise = np.random.randn(self.Q.shape[1]) * .001
-        return np.argmax(self.Q(state) + noise)
+                return np.argmax(self.Q[state] + noise)
 
     def update(self, s0, a, s1, r, done):
-        target = self.Q(s0)
-        target[a] = r + self.discount * np.max(self.Q(s1))
-        self.Q.update(s0, target)
+        # Update Q table.
+        learned_value = r + self.discount * np.max(self.Q[s1])
+        self.Q[s0, a] += self.learn_rate * (learned_value - self.Q[s0, a])
+
+
+
+class Policy(ABC):
+    """Chooses actions."""
+    def __init__(self, env, epsilon=0, anneal=1):
+        self.env = env
+        self.epsilon = epsilon
+        self.anneal = anneal
+
+    @abstractmethod
+    def __call__(self, state):
+        """Returns an action to take in a given state."""
+        pass
+
+
+class MaxQPolicy(Policy):
+    """Chooses the action with highest Q value."""
+    def __init__(self, env, Q, **kwargs):
+        super().__init__(env, **kwargs)
+        self.Q = Q
+
+    def __call__(self, state, anneal_step=0):
+        epsilon = self.epsilon * self.anneal ** anneal_step
+        if np.random.rand() < epsilon:
+            return np.random.randint(self.env.n_actions)
+        else:
+            noise = np.random.randn(self.Q.shape[1]) * .001
+            return np.argmax(self.Q[state] + noise)
+
+
+class QLearningAgent(Agent):
+    """Learns expected values of taking an action in a state."""
+    def __init__(self, env, learn_rate=1, discount=1, 
+                 policy=MaxQPolicy, policy_kws=dict(epsilon=0.5, anneal=.99)):
+        super().__init__(env, discount=discount)
+        self.learn_rate = learn_rate
+
+        # Q is a table of estimated values for taking an action in a state. It
+        # incorporates the direct reward as well as expected future reward.
+        self.Q = np.zeros((self.n_states, self.n_actions))
+        self.policy = policy(env, self.Q, **policy_kws)
+
+    @property
+    def V(self):
+        return np.max(self.Q, axis=1)
+
+    def act(self, state):
+        return self.policy(state, self.i_episode)
+
+    def update(self, s0, a, s1, r, done):
+        # Update Q table.
+        learned_value = r + self.discount * np.max(self.Q[s1])
+        self.Q[s0, a] += self.learn_rate * (learned_value - self.Q[s0, a])
 
 
 class NstepSarsa(QLearningAgent):
@@ -331,6 +320,14 @@ class NstepSarsa(QLearningAgent):
                 update(s_t, a_t, finished=True)
                 self.memory.popleft()
 
+
+
+
+
+
+        
+
+
 class SarsaAgent(QLearningAgent):
     def start_episode(self, state):
         # Store last state, action, reward because updates for step t are done
@@ -359,6 +356,66 @@ class SarsaAgent(QLearningAgent):
 
 
 
+class PlanAgent(Agent):
+    """An Agent with a plan."""
+    def __init__(self, env, replan=False, **kwargs):
+        super().__init__(env, **kwargs)
+        self.replan = replan
+        self.plan = iter([])
+
+    def act(self, state):
+        try:
+            if self.replan:
+                raise StopIteration()
+            else:
+                return next(self.plan)
+        except StopIteration:
+            self.plan = iter(self.make_plan(state))
+            return next(self.plan)
+
+
+class SearchAgent(PlanAgent):
+    """Searches for the maximum reward path using a model."""
+
+    def __init__(self, env, depth=None, model=None, 
+                 V=None, memory=False, replan=False, **kwargs):
+        super().__init__(env, replan=replan, **kwargs)
+        if depth is None:
+            depth = -1  # infinite depth
+        self.depth = depth
+
+        if model is None:
+            model = TrueModel(env)
+        self.model = model
+        self.memory = memory
+        self.last_state = None
+        self.explored = set()
+
+    def reward(self, s0, a, s1, r):
+        return r
+
+    def act(self, s0):
+        self.explored.add(s0)
+        return super().act(s0)
+
+    def update(self, s0, a, s1, r, done):
+        if self.memory:
+            # TODO longer memory (should take into account recency of
+            # a repeated state).
+            self.last_state = s0
+
+    def make_plan(self, state):
+        def eval_path(path):
+            # Choose path with greatest reward. In case of a tie, prefer the path
+            # that takes you to unexplored territory. If no such path exists,
+            # don't go back to the state you were at previously.
+            reward = sum((self.reward(*node[1:])) * self.discount ** i
+                         for i, node in enumerate(path))
+            num_new = sum(node.s1 not in self.explored for node in path)
+            not_backwards = all(node.s1 != self.last_state for node in path)
+            return (reward, num_new, not_backwards)
+        path = max(self.model.paths(state, depth=self.depth), key=eval_path)
+        return (node.a for node in path)
 
 
 class PseudoAgent(PlanAgent):
@@ -424,9 +481,72 @@ class PseudoAgent(PlanAgent):
         return (node.a for node in path)
 
 
+class PseudoRewarder(object):
+    """Doles out pseudo-rewards."""
+    def __init__(self, model, V, freq, mode, weight, discount):
+        assert mode in ('horizon', 'full')
+
+        self.model = model
+        self.V = V
+        self.freq = freq
+        self.mode = mode
+        self.weight = weight
+        self.discount = discount
+
+    def recover(self, s0, a, s1):
+        return self.weight * self._cache.get(s1, 0)
+
+    def start_episode(self, s0):
+        self._cache = {}
+        if self.mode == 'horizon':
+            self.compute_horizon(s0)
+        elif self.mode == 'full':
+            self.compute_full(s0)
+
+    def update(self, s1):
+        if self.mode == 'horizon' and s1 in self._cache:
+            # Whenever we get a pseudo-reward, we compute new ones.
+            self._cache = {}
+            self.compute_horizon(s1)
+
+    def horizon(self, s0):
+        for path in self.model.paths(s0, depth=self.freq):
+            yield path[-1].s1
+
+    def compute_horizon(self, s0):
+        # TODO: handle different length paths
+        # TODO: handle multiple paths to one state
+        # import ipdb, time; ipdb.set_trace(); time.sleep(0.5)
+        for s1 in self.horizon(s0):
+            assert s1 not in self._cache
+            self._cache[s1] = self.discount * self.V[s1] - self.V[s0]
+
+    def compute_full(self, s0):
+        for s1 in self.horizon(s0):
+            self._cache[s1] = self.discount * self.V[s1] - self.V[s0]
+            self.compute_full(s1)  # TODO use queue not recursion
+
+
+class PrecomputedPseudoRewarder(object):
+    """Doles out precomputed pseudo-rewards."""
+    def __init__(self, rewards):
+        self.rewards = rewards
+    
+    def recover(self, s0, a, s1):
+        return self.rewards[s0][s1]
+
+    def start_episode(self, s0):
+        return
+
+    def update(self, s1):
+        return
+
+
+
+
 class Model(object):
     """Learned model of an MDP."""
-    Node = namedtuple('Node', ['p','s0', 'a', 's1', 'r', 'done'])
+    Node = namedtuple('Node', ['p','s0', 'a', 's1', 'r'])
 
     def __init__(self, env):
         # (s, a) -> [total_count, outcome_counts]
@@ -461,7 +581,7 @@ class Model(object):
             for a in range(self.n_actions):
                 for (p, s1, r, done) in self.results(s0, a):
                     if p and (cycles or s1 not in explored):
-                        new_path = path + [self.Node(p, s0, a, s1, r, done)]
+                        new_path = path + [self.Node(p, s0, a, s1, r)]
                         if done or depth == 1:
                             yield new_path
                         else: 
