@@ -37,10 +37,25 @@ def clear_screen():
     clear_output()
 
 
-def show_path(env, actions, state=None, render='step'):
-    if state is None:
-        state = env.reset()
+def show_path(env, trace, render='human'):
+    env._state = trace['_state']
     env.render(mode=render)
-    for a in actions:
+    for a in trace['actions']:
         env.step(a)
         env.render(mode=render)
+
+
+import heapq
+class Heap(list):
+        
+    def pop(self) :
+        return heapq.heappop(self)
+        
+    def push(self, item) :
+        heapq.heappush(self, item)
+        
+    def pushpop(self, item) :
+        return heapq.heappushpop(self, item)
+        
+    def poppush(self, item) :
+        return heapq.replace(self, item)

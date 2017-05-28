@@ -7,6 +7,7 @@ import utils
 import time
 np.set_printoptions(precision=3, linewidth=200)
 
+from copy import deepcopy
 
 # ========================== #
 # ========= Agents ========= #
@@ -71,6 +72,7 @@ class Agent(ABC):
             'return': None
         }
         new_state = self.env.reset()
+        trace['_state'] = self.env._state
         self.start_episode(new_state)
         done = False
         for i_step in range(max_steps):
@@ -103,26 +105,26 @@ class Agent(ABC):
         trace['return'] = sum(trace['rewards'])   # TODO discounting
         return trace
 
-    def run_many(self, n_episodes, **kwargs):
+    def run_many(self, n_episodes, track=(), **kwargs):
         """Runs several episodes, returns a summary of results."""
-        data = {
-            'i_episode': [],
-            'n_steps': [],
-            'return': [],
-            'finished': [],
-        }
+        data = defaultdict(list)
         for _ in range(n_episodes):
             trace = self.run_episode(**kwargs)
             data['i_episode'].append(trace['i_episode'])
             data['n_steps'].append(len(trace['states']))
             data['return'].append(trace['return'])
             data['finished'].append(trace['finished'])
+            for k, v in self.trace().items():
+                data[k].append(v)
 
         return data
 
     def _render(self, mode):
         if mode == 'step':
-            input('> ')
+            x = input('> ')
+            while x:
+                print(eval(x))
+                x = input('> ')
             utils.clear_screen()
             self.env.render()
         elif mode == 'clear':
@@ -138,28 +140,40 @@ class Agent(ABC):
 
 class TDLambdaV(object):
     """Learns a linear value function with TD lambda."""
-    def __init__(self, env, learn_rate=.1, decay=0):
+    def __init__(self, env, learn_rate=.01, trace_decay=0, decay=1, memory=10):
         self.env = env
         self.learn_rate = learn_rate
-        self.shape = len(self.features(0))
+        self.shape = len(self.features(env.reset()))
+        self.trace_decay = trace_decay
         self.decay = decay
         self.theta = np.zeros(self.shape)
+        # self.memory = deque(maxlen=memory)
         self.trace = np.zeros(self.shape)
 
     def features(self, s):
+        if not isinstance(s, int):
+            return np.r_[1, s]
         x = [0] * self.env.nS
         x[s] = 1
         return x
-        return self.env.decode(s)
+        # return self.env.decode(s)
 
     def update(self, s, v):
+        # self.learn_rate *= .999
         x = self.features(s)
         vhat = x @ self.theta
         error = v - vhat
-        self.trace = self.decay * self.trace + x
+        self.trace = self.trace_decay * self.trace + x
+        # if np.random.rand() < .01:
+        #     print('------')
+        #     print(error)
+        #     print(self.trace)
+        #     print(self.theta)
         self.theta += self.learn_rate * error * self.trace
+        self.theta *= self.decay
+        # self.memory.append(self.theta.copy())
 
-    def predict(self, s):
+    def predict(self, s, ucb=False):
         x = self.features(s)
         return x @ self.theta
 
@@ -193,53 +207,70 @@ class PlanAgent(Agent):
 class SearchAgent(PlanAgent):
     """Searches for the maximum reward path using a model."""
 
-    def __init__(self, env, depth=None, model=None, 
-                 V=None, memory=False, replan=False, **kwargs):
-        super().__init__(env, replan=replan, **kwargs)
+    def __init__(self, env, depth=None, **kwargs):
+        super().__init__(env, **kwargs)
         if depth is None:
             depth = -1  # infinite depth
         self.depth = depth
 
-        if model is None:
-            model = TrueModel(env)
-        self.model = model
-        self.memory = memory
+        # if model is None:
+        #     model = TrueModel(env)
+        self.model = None
         self.last_state = None
-        self.explored = set()
         self.V = TDLambdaV(env)
 
-    def reward(self, s0, a, s1, r):
-        return r
+    def start_episode(self, state):
+        self.explored = set()
+        self.model = deepcopy(self.env)
+
+    def trace(self):
+        return {
+            'theta': self.V.theta.copy(),
+            'berries': self.env._observe()[-1]
+        }
 
     def act(self, s0):
+        # return self.env.action_space.sample()
         self.explored.add(s0)
         return super().act(s0)
 
     def update(self, s0, a, s1, r, done):
         target = r + self.discount * self.V(s1)
         self.V.update(s0, target)
-        if self.memory:
-            # TODO longer memory (should take into account recency of
-            # a repeated state).
-            self.last_state = s0
 
     def make_plan(self, state):
-        def eval_path(path):
 
-            # Choose path with greatest reward. In case of a tie, prefer the path
-            # that takes you to unexplored territory. If no such path exists,
-            # don't go back to the state you were at previously.
-            path = tuple(path)
-            reward = sum(node.r * self.discount ** i
-                         for i, node in enumerate(path))
-            if not path[-1].done:
-                reward += self.V(path[-1].s1)
+        Node = namedtuple('Node', ('state', 'path', 'value'))
+        model = self.model
 
-            num_new = sum(node.s1 not in self.explored for node in path)
-            not_backwards = all(node.s1 != self.last_state for node in path)
-            return (reward, num_new, not_backwards)
-        path = max(self.model.paths(state, depth=self.depth), key=eval_path)
-        return (node.a for node in path)
+        def options(state):
+            for a in range(self.n_actions):
+                model._state = state
+                obs, r, done, info = model.step(a)
+                yield a, model._state, r, done
+
+
+        def expand(node):
+            s0, p0, v0 = node
+            for a, s1, r, done in options(s0):
+                p1, v1 = p0 + [a], v0 + r
+                # print(len(p1))
+                if done:
+                    yield Node(s1, p1, v1)
+                elif len(p1) > self.depth:
+                    noise = np.random.rand() * .98 ** self.i_episode
+                    value = self.V(self.env._observe(s1)) + noise
+                    yield Node(s1, p1, v1 + value)
+                else:
+                    yield from expand(Node(s1, p1, v1))
+
+
+        def eval_node(node):
+            exploring = 0
+            return (node.value, exploring)
+
+        node = Node(self.env._state, [], 0)
+        return max(expand(node), key=eval_node).path
 
 
 
@@ -292,154 +323,25 @@ class QLearningAgent(Agent):
         self.Q.update(s0, target)
 
 
-class NstepSarsa(QLearningAgent):
-    """7.2 in Sutton and Barto"""
-    def __init__(self, env, nstep=1, **kwargs):
-        super().__init__(env, **kwargs)
-        self.nstep = nstep
-
-    def start_episode(self, state):
-        self.memory = deque(maxlen=self.nstep)
-
-    def update(self, s0, a, s1, r, done):
-        self.log('update', s0, a)
-        self.log('  memory', list(self.memory))
-
-        def update(s_t, a_t, finished=False):
-            # value is G in Sutton p. 157
-            rewards = sum(m[2] * self.discount ** i for i, m in enumerate(self.memory))
-            future_value = rewards + (self.discount ** self.nstep) * self.Q[s0, a]
-            if finished:
-                value = rewards
-                self.log('Q{} = {}'.format((s_t, a_t), rewards))
-            else:
-                value = rewards + future_value
-                self.log('Q{} = {} + Q{} = {}'.format((s_t, a_t), rewards, (s0, a), value))
-
-            self.Q[s_t, a_t] += self.learn_rate * (value - self.Q[s_t, a_t])
-
-        if len(self.memory) == self.nstep:
-            s_t, a_t, _ = self.memory[0]
-            update(s_t, a_t)
-        
-        self.memory.append((s0, a, r))
-
-        if done:
-            self.log('finish remaining')
-            while self.memory:
-                s_t, a_t, _ = self.memory[0]
-                update(s_t, a_t, finished=True)
-                self.memory.popleft()
-
-class SarsaAgent(QLearningAgent):
-    def start_episode(self, state):
-        # Store last state, action, reward because updates for step t are done
-        # after choosing action of t+1
-        self.last_sar = None
-
-    def update(self, state, action, new_state, reward, done):
-
-        # We update the action at the last time step based on 
-        # the outcome of this time step.
-        s1, a1 = state, action
-
-        if self.last_sar is not None:
-            s0, a0, r = self.last_sar
-            learned_value = r + self.discount * self.Q[s1, a1]
-            self.Q[s0, a0] += self.learn_rate * (learned_value - self.Q[s0, a0])
-
-        if done:
-            # There won't be another action, so we update immediately. Value of final
-            # state is necessarily 0.
-            learned_value = reward + 0
-            self.Q[s1, a1] += self.learn_rate * (learned_value - self.Q[s1, a1])
-
-        self.last_sar = (state, action, reward)
-
-
-
-
-
-
-class PseudoAgent(PlanAgent):
-    """Searches for the maximum reward path using a model."""
-
-    def __init__(self, env, depth=None, model=None, 
-                 pseudo_freq=0, pseudo_mode='full', pseudo_weight=1, pseudo_rewards=None,
-                 V=None, memory=False, replan=False, **kwargs):
-        super().__init__(env, replan=replan, **kwargs)
-        if depth is None:
-            depth = -1  # infinite depth
-        self.depth = depth
-
-        if model is None:
-            model = TrueModel(env)
-        self.model = model
-
-        if pseudo_rewards:
-            self.pseudo_rewarder = PrecomputedPseudoRewarder(pseudo_rewards)
-        elif pseudo_freq:
-            if V is None:
-                V = value_iteration(env, self.discount)
-            self.pseudo_rewarder = PseudoRewarder(model, V, pseudo_freq, pseudo_mode,
-                                                  pseudo_weight, self.discount, )
-        else:
-            self.pseudo_rewarder = None
-
-        self.memory = memory
-        self.last_state = None
-
-    def start_episode(self, state):
-        if self.pseudo_rewarder:
-            self.pseudo_rewarder.start_episode(state)
-        super().start_episode(state)
-
-    def reward(self, s0, a, s1, r):
-        if self.pseudo_rewarder:
-            pseudo = self.pseudo_rewarder.recover(s0, a, s1)
-        else:
-            pseudo = 0
-        return r + pseudo
-
-    def update(self, s0, a, s1, r, done):
-        if not done and self.pseudo_rewarder:
-            self.pseudo_rewarder.update(s1)
-        if self.memory:
-            # TODO longer memory (should take into account recency of
-            # a repeated state).
-            self.last_state = s0
-
-    def make_plan(self, state):
-        def eval_path(path):
-            # Choose path with greatest reward. In case of a tie, prefer the path
-            # that takes you to unexplored territory. If no such path exists,
-            # don't go back to the state you were at previously.
-            reward = sum((self.reward(*node[1:])) * self.discount ** i
-                         for i, node in enumerate(path))
-            num_new = sum(node.s1 not in self.explored for node in path)
-            not_backwards = all(node.s1 != self.last_state for node in path)
-            return (reward, num_new, not_backwards)
-
-        path = max(self.model.paths(state, depth=self.depth), key=eval_path)
-        return (node.a for node in path)
-
-
 class Model(object):
     """Learned model of an MDP."""
     Node = namedtuple('Node', ['p','s0', 'a', 's1', 'r', 'done'])
 
     def __init__(self, env):
         # (s, a) -> [total_count, outcome_counts]
-        self.env = env
+        self.env = deepcopy(env)
         self.n_states = env.observation_space.n
         self.n_actions = env.action_space.n
         self.counts = defaultdict(lambda: [0, Counter()])
 
-    def results(self, s, a):
+    def options(self, s):
         """Yields possible outcomes of taking action a in state s.
 
         Outcome is (prob, s1, r, done).
         """
+        for a in range(self.n_actions):
+            env.state = s
+
         total_count, outcomes = self.counts[s, a]
         for (s1, r, done), count in outcomes.items():
             yield (count / total_count, s1, r, done)

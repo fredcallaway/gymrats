@@ -40,13 +40,22 @@ class ForageWorld(gym.Env):
         self.feature_space = (size, size, n_berry+1)
         self.observation_space = spaces.Discrete(np.product(self.feature_space))
         self.action_space = spaces.Discrete(4)
-        self.done = False
+        
+        self.done = None
+        self.berry_locs = None
+        self._state = None
+        self._seed()
+
+    def _seed(self, seed=None):
+        self.np_random, seed = gym.utils.seeding.np_random(seed)
+        return [seed]
 
     def _reset(self):
+        self.done = False
         initial = (self.size//2,) * 2
         locs = set()
         while len(locs) < self.n_berry:
-            loc = tuple(np.random.randint(0, self.size, size=2).tolist())
+            loc = tuple(self.np_random.randint(0, self.size, size=2).tolist())
             if loc in ((0,0), initial):
                 continue
             locs.add(loc)
@@ -54,8 +63,8 @@ class ForageWorld(gym.Env):
         self._state = (*initial, set())
         return self._observe(self._state)
 
-    def _observe(self, state):
-        row, col, collected = state
+    def _observe(self, state=None):
+        row, col, collected = (state or self._state)
         return row, col, len(collected)
 
     def _step(self, a):
@@ -74,7 +83,7 @@ class ForageWorld(gym.Env):
 
         berry = self.berry_locs.get((row, col))
         if berry is not None and berry not in collected:
-            collected |= {berry}
+            collected = collected | {berry}
         self._state = (row, col, collected)
 
         done = True if (row, col) == (0, 0) else False
@@ -199,7 +208,7 @@ class LinearEnv(DiscreteEnv):
 class GridEnv(DiscreteEnv):
     """A rectangluar grid with random negative rewards and one goal state."""
     def __init__(self, n_col=10, n_row=10, start=(0, 0), goal=None):
-        self.grid = np.random.randint(-9, 0, size=n_row * n_col).reshape(n_row, n_col)
+        self.grid = self.np_random.randint(-9, 0, size=n_row * n_col).reshape(n_row, n_col)
         self.n_col = n_col
         self.n_row = n_row
 
@@ -302,7 +311,7 @@ class DecisionTreeEnv(DiscreteEnv):
     def random(cls, depth, branch=2):
         
         def reward(depth):
-            return int(np.random.rand() * depth ** 2)
+            return int(self.np_random.rand() * depth ** 2)
 
         def expand(depth):
             if depth:
@@ -414,7 +423,7 @@ class DeterministicGraphEnv(DiscreteEnv):
     @classmethod
     def random_tree(cls, height, branch=2, reward=None):
         if reward is None:
-            reward = lambda depth: np.random.uniform(-10, 10)
+            reward = lambda depth: self.np_random.uniform(-10, 10)
         
         q = deque()  # queue of states to expand
         graph = []   # list of (s0, [(s1, reward)])
