@@ -1,14 +1,16 @@
 """Agents that operate in discrete fully observable environments."""
 
 from collections import namedtuple, defaultdict, Counter, deque
+import itertools as it
 import numpy as np
 from abc import ABC, abstractmethod
-import utils
+from utils import clear_screen, PriorityQueue
 import time
 np.set_printoptions(precision=3, linewidth=200)
 
+from tqdm import tqdm, trange, tnrange
 from copy import deepcopy
-
+from toolz.curried import *
 # ========================== #
 # ========= Agents ========= #
 # ========================== #
@@ -48,11 +50,16 @@ class Agent(ABC):
         pass
 
     def start_episode(self, state):
-        """This function is run once when an episode begins, starting at state.
+        """This function is run when an episode begins, starting at state.
 
         This can be used to e.g. to initialize episode-specific memory as necessary
         for n-step TD learning."""
         pass
+
+    def finish_episode(self):
+        """This function is run when an episode ends."""
+        return
+
 
     def run_episode(self, render=False, max_steps=1000, interact=False,
                     verbose=False):
@@ -63,14 +70,16 @@ class Agent(ABC):
         if interact:
             render = 'human'
             last_cmd = ''
-        trace = {
-            'i_episode': self.i_episode,
-            'states': [],
-            'actions': [],
-            'rewards': [],
-            'finished': False,
-            'return': None
-        }
+        trace = self._trace = defaultdict(list)
+        trace.update({
+                    'i_episode': self.i_episode,
+                    'states': [],
+                    'actions': [],
+                    'rewards': [],
+                    'finished': False,
+                    'return': None
+                })
+
         new_state = self.env.reset()
         trace['_state'] = self.env._state
         self.start_episode(new_state)
@@ -101,20 +110,24 @@ class Agent(ABC):
                 break
 
         trace['states'].append(new_state)  # final state
-        self.i_episode += 1
         trace['return'] = sum(trace['rewards'])   # TODO discounting
+        self.finish_episode()
+        self.i_episode += 1
         return trace
+
 
     def run_many(self, n_episodes, track=(), **kwargs):
         """Runs several episodes, returns a summary of results."""
         data = defaultdict(list)
-        for _ in range(n_episodes):
+        for _ in tnrange(n_episodes):
             trace = self.run_episode(**kwargs)
-            data['i_episode'].append(trace['i_episode'])
-            data['n_steps'].append(len(trace['states']))
-            data['return'].append(trace['return'])
-            data['finished'].append(trace['finished'])
-            for k, v in self.trace().items():
+            data['n_steps'].append(len(trace.pop('states')))
+            # data['i_episode'].append(trace.pop('i_episode'))
+            # data['return'].append(trace.pop('return'))
+            # data['finished'].append(trace.pop('finished'))
+            trace.pop('actions')
+            trace.pop('rewards')
+            for k, v in trace.items():
                 data[k].append(v)
 
         return data
@@ -125,30 +138,28 @@ class Agent(ABC):
             while x:
                 print(eval(x))
                 x = input('> ')
-            utils.clear_screen()
+            clear_screen()
             self.env.render()
         elif mode == 'clear':
-            utils.clear_screen()
+            clear_screen()
             self.env.render()
         elif mode == 'auto':
-            time.sleep(.3)
-            utils.clear_screen()
+            time.sleep(.4)
+            clear_screen()
             self.env.render()
         elif mode:
             self.env.render(mode=mode)
 
 
-class TDLambdaV(object):
+
+class ValueFunction(object):
     """Learns a linear value function with TD lambda."""
-    def __init__(self, env, learn_rate=.01, trace_decay=0, decay=1, memory=10):
+    def __init__(self, env, discount=1, learn_rate=.01, decay=1):
         self.env = env
         self.learn_rate = learn_rate
+        self.discount = discount
         self.shape = len(self.features(env.reset()))
-        self.trace_decay = trace_decay
         self.decay = decay
-        self.theta = np.zeros(self.shape)
-        # self.memory = deque(maxlen=memory)
-        self.trace = np.zeros(self.shape)
 
     def features(self, s):
         if not isinstance(s, int):
@@ -156,34 +167,105 @@ class TDLambdaV(object):
         x = [0] * self.env.nS
         x[s] = 1
         return x
-        # return self.env.decode(s)
 
-    def update(self, s, v):
-        # self.learn_rate *= .999
-        x = self.features(s)
-        vhat = x @ self.theta
-        error = v - vhat
-        self.trace = self.trace_decay * self.trace + x
-        # if np.random.rand() < .01:
-        #     print('------')
-        #     print(error)
-        #     print(self.trace)
-        #     print(self.theta)
-        self.theta += self.learn_rate * error * self.trace
-        self.theta *= self.decay
-        # self.memory.append(self.theta.copy())
+    def update(self, s0, a, s1, r, done):
+        return
 
-    def predict(self, s, ucb=False):
+    def finish_episode(self, trace):
+        pass
+
+    def predict(self, s):
         x = self.features(s)
         return x @ self.theta
+
+    def start_episode(self, i_ep):
+        return
 
     def to_array(self):
         return np.array([self.predict(s) for s in range(self.env.nS)])
 
-    __call__ = predict
+def interactions(x):
+    return [a * b for a, b in it.combinations(x, 2)]
+
+class FixedV(ValueFunction):
+    """User-specified value function."""
+    def __init__(self, env, theta):
+        super().__init__(env)
+        self.theta = np.array(theta)
+      
+
+class TDLambdaV(ValueFunction):
+    """Learns a linear value function with TD lambda."""
+    def __init__(self, env, trace_decay=0, **kwargs):
+        super().__init__(env, **kwargs)
+        self.trace_decay = trace_decay
+        self.trace = np.zeros(self.shape)
+        self.theta = np.zeros(self.shape)
+        self.theta_update = np.zeros(self.shape)
+
+    def start_episode(self, i_ep):
+        self.theta = self.theta_update.copy()
+
+    def update(self, s0, a, s1, r, done):
+        target = r + self.discount * self.predict(s1)
+        x = self.features(s0)
+        prediction = x @ self.theta
+        error = target - prediction
+        # print(x)
+        # import time; time.sleep(0.1)
+        self.trace = self.trace_decay * self.trace + x
+        self.theta_update += self.learn_rate * error * self.trace
+        self.theta_update *= self.decay
+
+
+    def features(self, s):
+        # return np.r_[1, s, interactions(s)]
+        return np.r_[1, s]
+
+    # def update(self, s0, a, s1, r, done):
+    #     target = r + self.discount * self.predict(s1)
+    #     x = self.features(s0)
+    #     prediction = x @ self.theta
+    #     error = target - prediction
+    #     self.trace = self.trace_decay * self.trace + x
+    #     self.theta += self.learn_rate * error * self.trace
+    #     self.theta *= self.decay
+
+def scratch():
+    agent = Agent()
+    V = TDLambdaV()
+    agent.register(V)
+    policy = Search(V)
+    
 
 
 
+
+
+from sklearn.linear_model import SGDRegressor
+class MonteCarloV(ValueFunction):
+    """Learns a linear value function with every-step Monte Carlo."""
+    def __init__(self, env, **kwargs):
+        super().__init__(env, **kwargs)
+        self.model = SGDRegressor()
+
+    def finish_episode(self, trace):
+        X = np.array([self.features(s) for s in trace['states']])
+        y = list(reversed(np.cumsum(list(reversed(trace['rewards'])))))
+        y.append(0)  # value of final state
+        self.model.partial_fit(X, y)
+
+    def predict(self, s):
+        if self.model.coef_ is not None:
+            return self.model.predict(self.features(s).reshape(1, -1))[0]
+        else:
+            return 0
+
+    @property
+    def theta(self):
+        return self.model.coef_
+
+        
 class PlanAgent(Agent):
     """An Agent with a plan."""
     def __init__(self, env, replan=False, **kwargs):
@@ -202,8 +284,6 @@ class PlanAgent(Agent):
             return next(self.plan)
 
 
-
-
 class SearchAgent(PlanAgent):
     """Searches for the maximum reward path using a model."""
 
@@ -217,61 +297,81 @@ class SearchAgent(PlanAgent):
         #     model = TrueModel(env)
         self.model = None
         self.last_state = None
-        self.V = TDLambdaV(env)
+        self.V = TDLambdaV(env, trace_decay=0, decay=.99, learn_rate=.01)
+        # self.V = FixedV(env, [0, 0, 0, 1])
 
     def start_episode(self, state):
-        self.explored = set()
-        self.model = deepcopy(self.env)
+        self.history = Counter()
+        self.model = Model(self.env)
+        self.V.start_episode(self.i_episode)
 
-    def trace(self):
-        return {
+    def finish_episode(self):
+        self.V.finish_episode(self._trace)
+        self._trace.update({
             'theta': self.V.theta.copy(),
-            'berries': self.env._observe()[-1]
-        }
+            'berries': self.env._observe()[-1],
+        })
+        t = self._trace
+        print(len(t['paths']), round(t['return'], 2))
 
     def act(self, s0):
         # return self.env.action_space.sample()
-        self.explored.add(s0)
+        self.history[s0] += 1
         return super().act(s0)
 
+
     def update(self, s0, a, s1, r, done):
-        target = r + self.discount * self.V(s1)
-        self.V.update(s0, target)
+        self.V.update(s0, a, s1, r, done)
 
-    def make_plan(self, state):
+    def make_plan(self, state, expansions=5000):
 
-        Node = namedtuple('Node', ('state', 'path', 'value'))
-        model = self.model
+        Node = namedtuple('Node', ('state', 'path', 'reward', 'done'))
+        @curry
+        def eval_node(node, noisy=1):
+            noise = np.random.rand() * 5 * .99 ** self.i_episode if noisy else 0
+            value = 0 if node.done else self.V.predict(self.env._observe(node.state))
 
-        def options(state):
-            for a in range(self.n_actions):
-                model._state = state
-                obs, r, done, info = model.step(a)
-                yield a, model._state, r, done
+            boredom = - 0.1 * self.history[self.env._observe(node.state)]
+            score = node.reward + value + noise + boredom
+            return - score
 
-
+        start = Node(self.env._state, [], 0, False)
+        frontier = PriorityQueue(key=eval_node)
+        frontier.push(start)
+        completed = []
         def expand(node):
-            s0, p0, v0 = node
-            for a, s1, r, done in options(s0):
-                p1, v1 = p0 + [a], v0 + r
-                # print(len(p1))
+            s0, p0, v0, _ = node
+            for a, s1, r, done in self.model.options(s0):
+                node1 = Node(s1, p0 + [a], v0 + r, done)
                 if done:
-                    yield Node(s1, p1, v1)
-                elif len(p1) > self.depth:
-                    noise = np.random.rand() * .98 ** self.i_episode
-                    value = self.V(self.env._observe(s1)) + noise
-                    yield Node(s1, p1, v1 + value)
+                    completed.append(node1)
                 else:
-                    yield from expand(Node(s1, p1, v1))
+                    frontier.push(node1)
+                    
+        for _ in range(expansions):
+            if frontier:
+                expand(frontier.pop())
+            else:
+                break
 
 
-        def eval_node(node):
-            exploring = 0
-            return (node.value, exploring)
+        choices = concat([completed, map(get(1), take(100, frontier))])
+        plan = min(choices, key=eval_node(noisy=True))
+        # print(len(plan.path), -round(eval_node(plan, noisy=False), 2), plan.done)
+        self._trace['paths'].append(plan.path)
+        return plan.path
 
-        node = Node(self.env._state, [], 0)
-        return max(expand(node), key=eval_node).path
 
+class Model(object):
+    """Simulated environment"""
+    def __init__(self, env):
+        self.env = deepcopy(env)
+      
+    def options(self, state):
+        for a in range(self.env.action_space.n):
+            self.env._state = state
+            obs, r, done, info = self.env.step(a)
+            yield a, self.env._state, r, done
 
 
 
@@ -321,177 +421,6 @@ class QLearningAgent(Agent):
         target = self.Q(s0)
         target[a] = r + self.discount * np.max(self.Q(s1))
         self.Q.update(s0, target)
-
-
-class Model(object):
-    """Learned model of an MDP."""
-    Node = namedtuple('Node', ['p','s0', 'a', 's1', 'r', 'done'])
-
-    def __init__(self, env):
-        # (s, a) -> [total_count, outcome_counts]
-        self.env = deepcopy(env)
-        self.n_states = env.observation_space.n
-        self.n_actions = env.action_space.n
-        self.counts = defaultdict(lambda: [0, Counter()])
-
-    def options(self, s):
-        """Yields possible outcomes of taking action a in state s.
-
-        Outcome is (prob, s1, r, done).
-        """
-        for a in range(self.n_actions):
-            env.state = s
-
-        total_count, outcomes = self.counts[s, a]
-        for (s1, r, done), count in outcomes.items():
-            yield (count / total_count, s1, r, done)
-
-    def expected_reward(self, s0, a, s1=None):
-        return sum(p * r for (p, s1_, r, done) in self.results(s0, a)
-                   if s1 is None or s1 == s1_)
-
-    def update(self, s0, a, s1, r, done):
-        self.counts[s0, a][0] += 1  # total count
-        self.counts[s0, a][1][s1, r, done] += 1  # outcome count
-
-    def paths(self, state, depth=-1, cycles=False):
-        """Yields all paths to a final state or a state `depth` steps away."""
-
-        def expand(path, explored, depth):
-            # TODO explored!
-            s0 = path[-1].s1 if path else state  # initial call
-            for a in range(self.n_actions):
-                for (p, s1, r, done) in self.results(s0, a):
-                    if p and (cycles or s1 not in explored):
-                        new_path = path + [self.Node(p, s0, a, s1, r, done)]
-                        if done or depth == 1:
-                            yield new_path
-                        else: 
-                            yield from expand(new_path, explored | {s1}, depth-1)
-
-        yield from expand([], {state}, depth)
-
-
-class TrueModel(Model):
-    """Accurate model of a DiscreteEnv."""
-    def __init__(self, env, **kwargs):
-        super().__init__(env, **kwargs)
-
-    def results(self, state, action):
-        yield from self.env.P[state][action]
-
-    def update(*args):
-        pass
-
-
-class ModelBasedAgent(Agent):
-    """Agent that builds a model of the MDP."""
-    def __init__(self, env, **kwargs):
-        super().__init__(env, **kwargs)
-        self.model = Model(env)
-        self.Q = np.zeros((self.model.n_states, self.model.n_actions))
-
-    def act(self, state):
-        noise = np.random.randn(self.Q.shape[1]) / (self.i_episode + 1)
-        return np.argmax(self.Q[state] + noise)  # a = action
-
-    def update(self, s0, a, s1, r, done):
-        self.model.update(s0, a, s1, r, done)
-        self.update_policy(s0, a)
-
-    def update_policy(self, s, a):
-        Q, V = self.Q, self.V
-        expected_future_reward = sum(p * V(s1) for p, s1, r, done in self.model.results(s, a))
-        Q[s, a] = self.model.expected_reward(s, a) + self.discount * expected_future_reward
-
-    def V(self, s):
-        """The value of taking the best possible action from state s."""
-        return self.Q[s].max()
-
-
-class PrioritizedSweeping(ModelBasedAgent):
-    """Learns by replaying past experience.
-
-    https://www.cs.cmu.edu/afs/cs/project/jair/pub/volume4/kaelbling96a-html/node29.html
-    """
-    def __init__(self, env, n_simulate=0, **kwargs):
-        super().__init__(env, **kwargs)
-        self.n_simulate = n_simulate
-        self.value_change = np.zeros(self.n_states)
-        self.predecessors = defaultdict(set)
-
-    def update(self, s0, a, s1, r, done):
-        super().update(s0, a, s1, r, done)
-
-        self.predecessors[s1].add(s0)
-        # Update Q by simulation.
-        for _ in range(self.n_simulate):
-            s = self.value_change.argmax()
-            if self.value_change[s] == 0:
-                break  # no new information to propogate
-            self.value_change[s] = 0  # reset
-            self.update_policy(s, self.act(s))
-
-    def update_policy(self, s0, a):
-        # Track changes to prioritize simulations.
-        old_val = self.V(s0)
-        super().update_policy(s0, a)
-        change = abs(self.V(s0) - old_val)
-        if change:
-            self.log('change', s0, a, change)
-        for s_pred in self.predecessors[s0]:
-            self.value_change[s_pred] = max(self.value_change[s_pred], change)  # TODO weight by transition prob
-
-
-def value_iteration(env, discount=.999, epsilon=0.001, max_iters=100000):
-    """Returns the optimal value table for env."""
-    V1 = np.zeros(env.observation_space.n)
-
-    def value(result):
-        # [(0.5, 0, 0, False), (0.5, 0, 0, False)] -> float
-        return sum(p * (r + discount * V[s1])
-                   for p, s1, r, _ in result)
-
-    for i in range(1, max_iters+1):
-        V = V1.copy()
-        delta = 0
-        for state, actions in env.P.items():
-
-            # Example actions object. Keys are actions, values are
-            # lists of (prob, next_state, reward, done).
-            # {0: [(1.0, 1, 0, False)],
-            #  1: [(1.0, 2, 0, False)],
-            #  2: [(1.0, 3, -1, False)],
-            #  3: [(1.0, 0, 4, False)]}
-
-            results = actions.values()
-            V1[state] = max(map(value, results))
-            delta = max(delta, abs(V1[state] - V[state]))
-
-        if delta < epsilon * (1 - discount) / discount:
-            return V
-
-    print('NOT CONVERGED')
-    return V
-
-
-
-def v_to_q(env, V):
-    
-    def rval(result):
-        p, s1, r, _ = result
-        return p * (r + V[s1])
-    
-    def qval(s, a):
-        return sum(rval(result) for result in env.P[s][0])
-    
-    Q = np.array([[qval(s, a) for a in range(env.n_actions)]
-                  for s in range(env.n_states)])
-    return Q
-
-
-
-
 
 
 

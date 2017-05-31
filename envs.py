@@ -41,7 +41,6 @@ class ForageWorld(gym.Env):
         self.observation_space = spaces.Discrete(np.product(self.feature_space))
         self.action_space = spaces.Discrete(4)
         
-        self.done = None
         self.berry_locs = None
         self._state = None
         self._seed()
@@ -51,7 +50,6 @@ class ForageWorld(gym.Env):
         return [seed]
 
     def _reset(self):
-        self.done = False
         initial = (self.size//2,) * 2
         locs = set()
         while len(locs) < self.n_berry:
@@ -68,9 +66,9 @@ class ForageWorld(gym.Env):
         return row, col, len(collected)
 
     def _step(self, a):
-        if self.done:
-            return self._observe(self._state), 0, True, {}
         row, col, collected = self._state
+        if (row, col) == (0, 0):  # already done
+            return self._observe(self._state), 0, True, {}
 
         if a == UP:
             row = max(row-1, 0)
@@ -89,7 +87,6 @@ class ForageWorld(gym.Env):
         done = True if (row, col) == (0, 0) else False
         if done:
             reward = len(collected)
-            self.done = True
         else:
             reward = - abs(self.time_cost)
 

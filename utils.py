@@ -46,16 +46,12 @@ def show_path(env, trace, render='human'):
 
 
 import heapq
-class Heap(list):
+class PriorityQueue(list):
+    def __init__(self, key):
+        self.key = key
+
+    def pop(self):
+        return heapq.heappop(self)[1]
         
-    def pop(self) :
-        return heapq.heappop(self)
-        
-    def push(self, item) :
-        heapq.heappush(self, item)
-        
-    def pushpop(self, item) :
-        return heapq.heappushpop(self, item)
-        
-    def poppush(self, item) :
-        return heapq.replace(self, item)
+    def push(self, item):
+        heapq.heappush(self, (self.key(item), item))
