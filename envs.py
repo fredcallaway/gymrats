@@ -124,46 +124,6 @@ class ForageWorld(gym.Env):
     #     return tuple(reversed(x))
         # super().__init__()
 
-# class ForageWorld(DiscreteEnv):
-#     """Gather berries."""
-#     def __init__(self, size, n_berry, time_cost):
-#         self.feature_space = (size, size, *(1,) * n_berry)
-
-
-#         def results(s0, a):
-#             row, col, nb = self.decode(s0)
-
-#             if a == UP:
-#                 row = max(row-1, 0)
-#             elif a == RIGHT:
-#                 col = min(col+1, size-1)
-#             elif a == DOWN:
-#                 row = min(row+1, size-1)
-#             elif a == LEFT:
-#                 col = max(col-1,0)
-            
-#             r = self.grid[row, col]
-#             done = True if r >= 0 else False
-#             s1 = self.encode(row, col)
-#             return [Result(1.0, s1, r, done)]
-
-
-#     def encode(x):
-#         s = 0
-#         for f, n in zip(x, fs):
-#             s *= n
-#             s += f
-#         return s
-            
-#     def decode(s):
-#         x = []
-#         for n in reversed(fs):
-#             x.append(s % n)
-#             s //= n
-#         return tuple(reversed(x))
-#         # super().__init__()
-
-
 
 
 class LinearEnv(DiscreteEnv):
