@@ -193,7 +193,10 @@ class RandomPolicy(Policy):
     """Chooses actions randomly."""
     
     def act(self, state):
-        return self.env.action_space.sample()      
+        return self.env.action_space.sample()
+
+    def finish_episode(self, trace):
+        self.ep_trace['berries'] = self.env._observe()[-1]    
 
 
 class LinearSGD(object):
@@ -283,6 +286,7 @@ class LinearV(StateValueFunction):
     def finish_episode(self, trace):
         self.ep_trace['theta_v'] = self.model.theta[:, 0].copy()
 
+
 class TDLambdaV(StateValueFunction):
     """Learns a linear value function with TD lambda."""
     def __init__(self, trace_decay=0, **kwargs):
@@ -313,11 +317,23 @@ class TDLambdaV(StateValueFunction):
         x = self.features(s)
         return x @ self.theta
 
-class FixedV(ValueFunction):
+    def finish_episode(self, trace):
+        self.ep_trace['theta_v'] = self.theta.copy()
+
+
+class FixedV(StateValueFunction):
     """User-specified value function."""
-    def __init__(self, env, theta):
-        super().__init__(env)
+    def __init__(self, theta):
+        super().__init__()
         self.theta = np.array(theta)
+
+    def predict(self, s):
+        x = self.features(s)
+        return x @ self.theta
+
+    def finish_episode(self, trace):
+        self.ep_trace['theta_v'] = self.theta.copy()
+
 
 
 class MaxQPolicy(Policy):
@@ -369,17 +385,20 @@ class MonteCarloV(ValueFunction):
 
 class SearchPolicy(Policy):
     """Searches for the maximum reward path using a model."""
-    def __init__(self, V, replan=False, **kwargs):
+    def __init__(self, V, replan=False, noise=1, anneal=1, **kwargs):
         super().__init__(**kwargs)
         self.V = V
         self.replan = replan
+        self.noise = noise
+        self.anneal = anneal
         self.history = None
         self.model = None
-        self.plan = iter(())  # start with no plan
+        self.plan = None
 
     def start_episode(self, state):
         self.history = Counter()
         self.model = Model(self.env)
+        self.plan = iter(())  # start with no plan
 
     def finish_episode(self, trace):
         self.ep_trace['berries'] = self.env._observe()[-1]
@@ -403,9 +422,9 @@ class SearchPolicy(Policy):
         V = self.V.predict
 
         @curry
-        def eval_node(node, noisy=1):
+        def eval_node(node, noisy=True):
             obs = env._observe(node.state)
-            noise = np.random.rand() * 5 * .99 ** self.i_episode if noisy else 0
+            noise = np.random.rand() * (self.noise * self.anneal ** self.i_episode) if noisy else 0
             value = 0 if node.done else V(obs)
             boredom = - 0.1 * self.history[obs]
             score = node.reward + value + noise + boredom
