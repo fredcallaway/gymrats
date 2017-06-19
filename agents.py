@@ -335,7 +335,6 @@ class FixedV(StateValueFunction):
         self.ep_trace['theta_v'] = self.theta.copy()
 
 
-
 class MaxQPolicy(Policy):
     """Chooses the action with highest Q value."""
     def __init__(self, Q, epsilon=0.5, anneal=.95, **kwargs):
@@ -357,30 +356,40 @@ class MaxQPolicy(Policy):
 def interactions(x):
     return [a * b for a, b in it.combinations(x, 2)]
 
-
-
-from sklearn.linear_model import SGDRegressor
-class MonteCarloV(ValueFunction):
-    """Learns a linear value function with every-step Monte Carlo."""
-    def __init__(self, env, **kwargs):
-        super().__init__(env, **kwargs)
-        self.model = SGDRegressor()
+class MemV(StateValueFunction):
+    """docstring for MemV"""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.tbl = defaultdict(list)
 
     def finish_episode(self, trace):
-        X = np.array([self.features(s) for s in trace['states']])
-        y = list(reversed(np.cumsum(list(reversed(trace['rewards'])))))
-        y.append(0)  # value of final state
-        self.model.partial_fit(X, y)
+        returns = concatv(reversed(np.cumsum(list(reversed(trace['rewards'])))), [0])
+        for s, r in zip(trace['states'], returns):
+            self.tbl[s].append(r)
 
-    def predict(self, s):
-        if self.model.coef_ is not None:
-            return self.model.predict(self.features(s).reshape(1, -1))[0]
-        else:
-            return 0
 
-    @property
-    def theta(self):
-        return self.model.coef_
+# from sklearn.linear_model import SGDRegressor
+# class MonteCarloV(ValueFunction):
+#     """Learns a linear value function with every-step Monte Carlo."""
+#     def __init__(self, env, **kwargs):
+#         super().__init__(env, **kwargs)
+#         self.model = SGDRegressor()
+
+#     def finish_episode(self, trace):
+#         X = np.array([self.features(s) for s in trace['states']])
+#         y = list(reversed(np.cumsum(list(reversed(trace['rewards'])))))
+#         y.append(0)  # value of final state
+#         self.model.partial_fit(X, y)
+
+#     def predict(self, s):
+#         if self.model.coef_ is not None:
+#             return self.model.predict(self.features(s).reshape(1, -1))[0]
+#         else:
+#             return 0
+
+#     @property
+#     def theta(self):
+#         return self.model.coef_
 
 
 class SearchPolicy(Policy):
@@ -423,6 +432,8 @@ class SearchPolicy(Policy):
 
         @curry
         def eval_node(node, noisy=True):
+            if not node.path:
+                return np.inf
             obs = env._observe(node.state)
             noise = np.random.rand() * (self.noise * self.anneal ** self.i_episode) if noisy else 0
             value = 0 if node.done else V(obs)
@@ -433,13 +444,15 @@ class SearchPolicy(Policy):
         start = Node(env._state, [], 0, False)
         frontier = PriorityQueue(key=eval_node)
         frontier.push(start)
-        completed = []
+        best_finished = start
         def expand(node):
+            nonlocal best_finished
+            best_finished = min((best_finished, node), key=eval_node)
             s0, p0, v0, _ = node
             for a, s1, r, done in self.model.options(s0):
                 node1 = Node(s1, p0 + [a], v0 + r, done)
                 if done:
-                    completed.append(node1)
+                    best_finished = min((best_finished, node1), key=eval_node)
                 else:
                     frontier.push(node1)
                     
@@ -450,8 +463,9 @@ class SearchPolicy(Policy):
                 break
 
 
-        choices = concat([completed, map(get(1), take(100, frontier))])
-        plan = min(choices, key=eval_node(noisy=True))
+        plan = min(best_finished, frontier.pop(), key=eval_node)
+        # choices = concat([completed, map(get(1), take(100, frontier))])
+        # plan = min(choices, key=eval_node(noisy=True))
         print(
             len(plan.path), 
             -round(eval_node(plan, noisy=False), 2),
