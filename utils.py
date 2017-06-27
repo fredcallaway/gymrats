@@ -1,5 +1,5 @@
 from IPython.display import clear_output
-
+import itertools as it
 def join(*args, sep=' '):
     return sep.join(map(str, args))
 
@@ -55,3 +55,12 @@ class PriorityQueue(list):
         
     def push(self, item):
         heapq.heappush(self, (self.key(item), item))
+
+def dict_product(d):
+    """All possible combinations of values in lists in `d`"""
+    for k, v in d.items():
+        if not isinstance(v, list):
+            d[k] = [v]
+
+    for v in list(it.product(*d.values())):
+        yield dict(zip(d.keys(), v))

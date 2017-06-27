@@ -22,6 +22,7 @@ WALL = 1
 GOAL = 2
 
 
+
 # One possible result of an action
 # p: probability of this result
 # s1: next state
@@ -44,6 +45,13 @@ class ForageWorld(gym.Env):
         self.berry_locs = None
         self._state = None
         self._seed()
+        self._positions = {}
+        idxs = iter(range(size*size))
+        for r in range(size):
+            for c in range(size):
+                x = np.zeros(size*size)
+                x[next(idxs)] = 1
+                self._positions[r, c] = tuple(x)
 
     def _seed(self, seed=None):
         self.np_random, seed = gym.utils.seeding.np_random(seed)
@@ -58,12 +66,12 @@ class ForageWorld(gym.Env):
                 continue
             locs.add(loc)
         self.berry_locs = {l: i for i, l in enumerate(locs)}
-        self._state = (*initial, set())
+        self._state = (*initial, ())
         return self._observe(self._state)
 
     def _observe(self, state=None):
         row, col, collected = (state or self._state)
-        return row, col, len(collected)
+        return (*self._positions[row, col], len(collected))
 
     def _step(self, a):
         row, col, collected = self._state
@@ -81,7 +89,7 @@ class ForageWorld(gym.Env):
 
         berry = self.berry_locs.get((row, col))
         if berry is not None and berry not in collected:
-            collected = collected | {berry}
+            collected = (*collected, berry)
         self._state = (row, col, collected)
 
         done = True if (row, col) == (0, 0) else False
