@@ -30,7 +30,6 @@ GOAL = 2
 # done: True if the episode is over else False
 Result = namedtuple('Result', ['p', 's1', 'r', 'done'])
 
-
 class ForageWorld(gym.Env):
     """Gather berries."""
     metadata = {'render.modes': ['human']}
@@ -116,6 +115,106 @@ class ForageWorld(gym.Env):
         print('\n'.join(''.join(line) for line in out))
 
 
+class GridWorld(gym.Env):
+    """Move around in a grid."""
+    metadata = {'render.modes': ['human', 'array']}
+    WALL = 1
+    GOAL = 2
+    AGENT = 3
+
+    def __init__(self, spec, move_cost=0.01, crash_cost=0, goal_reward=1, init_state=(1,1), goal=None):
+        # self.size = size
+        self.map = spec
+        self.size = size = spec.shape[0]
+        self.move_cost = - abs(move_cost)
+        self.crash_cost = - abs(crash_cost)
+        self.goal_reward = goal_reward
+        self.init_state = init_state
+        self.goal = goal
+        self.one_hot = False
+
+        self._state = None
+        self._seed()
+        self._positions = {}
+        idxs = iter(range(size*size))
+        for r in range(size):
+            for c in range(size):
+                x = np.zeros(size*size)
+                x[next(idxs)] = 1
+                self._positions[r, c] = tuple(x)
+
+
+        self.observation_space = spaces.Discrete(len(self._positions))
+        self.action_space = spaces.Discrete(4)
+        self.reset()
+
+    def _seed(self, seed=None):
+        self.np_random, seed = gym.utils.seeding.np_random(seed)
+        return [seed]
+
+    def _reset(self):
+        self._state = self.init_state
+        return self._observe(self._state)
+
+    def _observe(self, state=None):
+        row, col = self._state if state is None else state
+        if self.one_hot:
+            return self._positions[row, col]
+        else:
+            return row, col
+
+    def location(self, state=None):
+        state = self._state if state is None else state
+        return state
+
+    def _done(self, state=None):
+        state = self._state if state is None else state
+        row, col = self.location(state)
+        return self.map[row, col] == self.GOAL
+
+    def _move(self, loc, a):
+        row, col = row1, col1 = loc
+        if a == UP:
+            row1 = max(row-1, 0)
+        elif a == RIGHT:
+            col1 = min(col+1, self.size-1)
+        elif a == DOWN:
+            row1 = min(row+1, self.size-1)
+        elif a == LEFT:
+            col1 = max(col-1,0)
+        return row1, col1
+
+    def _step(self, a):
+        reward = 0
+        done = self._done(self._state)
+        if not done:
+            row, col = self._move(self.location(), a)
+            if self.map[row, col] == self.WALL:
+                reward = self.crash_cost
+            else:
+                reward = self.move_cost
+                self._state = (row, col)
+                done = self._done(self._state)
+
+        return self._observe(self._state), reward, done, {}
+
+    def _render(self, mode='human', close=False):
+        row, col = self.location()
+        spec = self.map.copy()
+        spec[row, col] = self.AGENT
+        if mode == 'array':
+            return spec
+        # sns.set_palette('muted', color_codes=True)
+        from matplotlib import colors
+        from matplotlib import pyplot as plt
+        cdef = ['#ffffff', '#111111', '#FC4754', '#4A74FF']
+        cmap = colors.ListedColormap(cdef)
+        bounds = np.arange(cmap.N + 1)
+        cnorm = colors.BoundaryNorm(bounds, cmap.N)
+        # plt.text(2, 3, 'A', size=22, verticalalignment='center', horizontalalignment='center', color='w')
+        plt.imshow(spec, aspect='equal', cmap=cmap, norm=cnorm)
+      
+
 
     # def encode(x):
     #     s = 0
@@ -131,7 +230,6 @@ class ForageWorld(gym.Env):
     #         s //= n
     #     return tuple(reversed(x))
         # super().__init__()
-
 
 
 class LinearEnv(DiscreteEnv):

@@ -139,6 +139,7 @@ class Component(ABC):
     def __init__(self):
         super().__init__()
         self.agent = None
+        self.saved = defaultdict(list)
 
     def experience(self, state, action, new_state, reward, done):
         """Learn from the results of taking action in state.
@@ -180,6 +181,9 @@ class Component(ABC):
     def log(self, *args):
         self.agent.log(*args)
 
+    def save(self, key, val):
+        self.saved[key].append(val)
+
 
 class Policy(Component):
     """Chooses actions"""
@@ -202,59 +206,33 @@ class RandomPolicy(Policy):
         self.ep_trace['berries'] = self.env._observe()[-1]
 
 
-class NeuralPolicyGradient(Policy):
-    """Learns a policy directly."""
-    def __init__(self):
-        super().__init__()
+    class NeuralPolicyGradient(Policy):
+        """Learns a policy directly."""
+        def __init__(self):
+            super().__init__()
 
-    def attach(self, agent):
-        super().attach(agent)
-        model = self.model = Sequential()
-        model.add(Dense(self.agent.n_actions, input_dim=len(self.env.reset()),
-                        activation='softmax', kernel_initializer='glorot_uniform'))
+        def attach(self, agent):
+            super().attach(agent)
+            model = self.model = Sequential()
+            model.add(Dense(self.agent.n_actions, input_dim=len(self.env.reset()),
+                            activation='softmax', kernel_initializer='glorot_uniform'))
 
-        action = K.placeholder(shape=[None, self.action_size])
-        discounted_rewards = K.placeholder(shape=[None, ])
+            action = K.placeholder(shape=[None, self.action_size])
+            discounted_rewards = K.placeholder(shape=[None, ])
 
-        good_prob = K.sum(action * self.model.output, axis=1)
-        eligibility = K.log(good_prob) * discounted_rewards
-        loss = -K.sum(eligibility)
+            good_prob = K.sum(action * self.model.output, axis=1)
+            eligibility = K.log(good_prob) * discounted_rewards
+            loss = -K.sum(eligibility)
 
-        optimizer = Adam(lr=self.learning_rate)
-        updates = optimizer.get_updates(self.model.trainable_weights, [], loss)
-        train = K.function([self.model.input, action, discounted_rewards], [], updates=updates)
-        return train
+            optimizer = Adam(lr=self.learning_rate)
+            updates = optimizer.get_updates(self.model.trainable_weights, [], loss)
+            train = K.function([self.model.input, action, discounted_rewards], [], updates=updates)
+            return train
 
-
-class PolicyGradient(Policy):
-    """Learns a policy directly."""
-    def attach(self, agent):
-        super().attach(agent)
-        sx = len(self.env.reset())
-        sy = self.agent.n_actions
-        shape = (sx, sy)
-        self.theta = np.random.random(shape)
-
-    def start_episode(self, state):
-        self.action_probs = []
-
-    def act(self, state):
-        action_probs = softmax(state @ self.theta)
-        a = np.random.choice(len(action_probs), p=action_probs)
-        p = action_probs[a]
-        # state -  
-        self.action_probs.append(p)
-        return a
-
-    def finish_episode(self, trace):
-        returns = get_returns(trace['rewards'])
-        for ret in returns:
-            theta += self.learn_rate * ret * np.log()
-
-        
-def softmax(x):
-    ex = np.exp(x)
-    return ex / ex.sum()
+            
+    def softmax(x):
+        ex = np.exp(x)
+        return ex / ex.sum()
 
 
 
@@ -361,9 +339,7 @@ class BayesianRegressionV(StateValueFunction):
         self.ep_trace['theta_v'] = self.model.w.copy()
         self.ep_trace['sigma_w'] = self.model.sigma_w.copy()
 
-
-def get_returns(rewards):
-    return list(reversed(np.cumsum(list(reversed(rewards)))))
+ 
 
 
 class TDLambdaV(StateValueFunction):
@@ -469,6 +445,104 @@ class MemV(StateValueFunction):
 #     @property
 #     def theta(self):
 #         return self.model.coef_
+
+
+class Astar(Policy):
+    """A* search finds the shortest path to a goal."""
+    def __init__(self, heuristic):
+        super().__init__()
+        self.heuristic = heuristic
+        self.plan = iter(())
+
+    def start_episode(self, state):
+        self.history = Counter()
+        self.model = Model(self.env)
+        self.node_history = []
+        self.frontier_history = []
+
+    def act(self, state):
+        # return self.env.action_space.sample()
+        self.history[state] += 1
+        try:
+            return next(self.plan)
+        except StopIteration:
+            self.plan = iter(self.make_plan(state))
+            return next(self.plan)
+    
+    def make_plan(self, state, expansions=5000):
+        
+        Node = namedtuple('Node', ('state', 'path', 'reward', 'done'))
+        env = self.env
+        V = self.heuristic
+
+        def eval_node(node):
+            if not node.path:
+                return np.inf  # the empty plan has infinite cost
+            obs = env._observe(node.state)
+            value = 0 if node.done else V(obs) * 1.001
+            boredom = - 0.1 * self.history[obs]
+            score = node.reward + value + boredom
+            return - score
+
+        start = Node(env._state, [], 0, False)
+        frontier = PriorityQueue(key=eval_node)
+        frontier.push(start)
+        self.rts = reward_to_state = defaultdict(lambda: -np.inf)
+        # import IPython; IPython.embed()
+        best_finished = start
+
+        def expand(node):
+            # print(node.state, node.reward, self.rts[node.state], V(env._observe(node.state)))
+            # time.sleep(0.1)
+            nonlocal best_finished
+            # best_finished = min((best_finished, node), key=eval_node)
+            s0, p0, r0, _ = node
+            for a, s1, r, done in self.model.options(s0):
+                node1 = Node(s1, p0 + [a], r0 + r, done)
+                if node1.reward <= reward_to_state[s1]:
+                    # print('abandon')
+                    continue  # cannot be better than an existing node
+                self.node_history.append(
+                    {'path': node1.path,
+                     'state': node1.state,
+                     'r': node1.reward,
+                     'b': self.env._observe(node1.state)[-1]    ,
+                     'v': -eval_node(node1)})
+                reward_to_state[s1] = node1.reward
+                if done:
+                    best_finished = min((best_finished, node1), key=eval_node)
+                else:
+                    frontier.push(node1)
+                    
+        for i in range(expansions):
+            self.frontier_history.append([n[1].state for n in frontier])
+            if frontier:
+                expand(frontier.pop())
+            else:
+                break
+
+
+
+        if frontier:
+            # plan = min(best_finished, frontier.pop(), key=eval_node)
+            plan = frontier.pop()
+            raise RuntimeError('No plan found.')
+        else:
+            plan = best_finished
+            print('best_finished = {}'.format(best_finished))
+        # choices = concat([completed, map(get(1), take(100, frontier))])
+        # plan = min(choices, key=eval_node(noisy=True))
+        # self.log(
+        #     i,
+        #     len(plan.path), 
+        #     -round(eval_node(plan, noisy=False), 2),
+        #     plan.done,
+        # )
+        # self._trace['paths'].append(plan.path)
+        self.save('plan', plan)
+        return plan.path
+
+
 
 
 class SearchPolicy(Policy):
