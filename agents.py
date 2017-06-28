@@ -446,6 +446,81 @@ class MemV(StateValueFunction):
 #     def theta(self):
 #         return self.model.coef_
 
+from envs import MetaSearchEnv
+
+class MetaSearchPolicy(Policy):
+    """A search policy with node expansion controlled by a meta-policy"""
+    Node = namedtuple('Node', ('state', 'path', 'reward', 'done'))
+    def __init__(self, meta_policy=None, replan=False, **kwargs):
+        super().__init__(**kwargs)
+        self.meta_policy = meta_policy
+        self.replan = replan
+        self.plan = iter(())
+
+    def start_episode(self, state):
+        super().start_episode(state)
+        self.history = Counter()
+        self.model = Model(self.env)
+
+    def act(self, state):
+        self.history[state] += 1
+        try:
+            if self.replan:
+                raise StopIteration()
+            else:
+                return next(self.plan)
+        except StopIteration:
+            self.plan = iter(self.make_plan(state))
+            return next(self.plan)
+
+    def meta_env(self):
+        return MetaSearchEnv(self.env, self.eval_node)
+
+    def heuristic(self, obs):
+        row, col = obs
+        g_row, g_col = self.env.goal
+        return self.env.move_cost * (abs(row - g_row) + abs(col - g_col))
+
+    def phi_node(self, node):
+        if node is None or not node.path:
+            return np.inf  # the empty plan has infinite cost
+        obs = self.env._observe(node.state)
+        value = 0 if node.done else self.heuristic(obs) * 1.001
+        boredom = - 0.1 * self.history[obs]
+        score = node.reward + value + boredom
+        return - score
+
+    def eval_node(self, node):
+        if node is None or not node.path:
+            return np.inf  # the empty plan has infinite cost
+        obs = self.env._observe(node.state)
+        value = 0 if node.done else self.heuristic(obs) * 1.001
+        boredom = - 0.1 * self.history[obs]
+        score = node.reward + value + boredom
+        return - score
+
+    def make_plan(self, state, expansions=5000):
+        meta_env = self.meta_env()
+        meta_state = meta_env.reset()
+        computation_cost = 0
+        
+        for i in range(expansions):
+            frontier, reward_to_state, best_done = meta_state
+            self.save('frontier', [n[1].state for n in frontier])
+            if best_done:
+                plan, r, done, info = meta_env.step('TERM')
+                computation_cost += r
+                return plan
+            elif frontier:
+                meta_state, r, done, info = meta_env.step(frontier.pop())
+                computation_cost += r
+            else:
+                raise RuntimeError('No plan found.')
+
+        assert 0
+
+from copy import copy
+
 
 class Astar(Policy):
     """A* search finds the shortest path to a goal."""
@@ -457,8 +532,6 @@ class Astar(Policy):
     def start_episode(self, state):
         self.history = Counter()
         self.model = Model(self.env)
-        self.node_history = []
-        self.frontier_history = []
 
     def act(self, state):
         # return self.env.action_space.sample()
@@ -468,26 +541,24 @@ class Astar(Policy):
         except StopIteration:
             self.plan = iter(self.make_plan(state))
             return next(self.plan)
+
+    def eval_node(self, node):
+        if not node.path:
+            return np.inf  # the empty plan has infinite cost
+        obs = self.env._observe(node.state)
+        value = 0 if node.done else self.heuristic(self.env, obs) * 1.001
+        boredom = - 0.1 * self.history[obs]
+        score = node.reward + value + boredom
+        return - score
     
     def make_plan(self, state, expansions=5000):
         
         Node = namedtuple('Node', ('state', 'path', 'reward', 'done'))
-        env = self.env
-        V = self.heuristic
-
-        def eval_node(node):
-            if not node.path:
-                return np.inf  # the empty plan has infinite cost
-            obs = env._observe(node.state)
-            value = 0 if node.done else V(obs) * 1.001
-            boredom = - 0.1 * self.history[obs]
-            score = node.reward + value + boredom
-            return - score
-
-        start = Node(env._state, [], 0, False)
+        eval_node = self.eval_node
+        start = Node(self.env._state, [], 0, False)
         frontier = PriorityQueue(key=eval_node)
         frontier.push(start)
-        self.rts = reward_to_state = defaultdict(lambda: -np.inf)
+        reward_to_state = defaultdict(lambda: -np.inf)
         # import IPython; IPython.embed()
         best_finished = start
 
@@ -501,13 +572,9 @@ class Astar(Policy):
                 node1 = Node(s1, p0 + [a], r0 + r, done)
                 if node1.reward <= reward_to_state[s1]:
                     # print('abandon')
+                    pass
                     continue  # cannot be better than an existing node
-                self.node_history.append(
-                    {'path': node1.path,
-                     'state': node1.state,
-                     'r': node1.reward,
-                     'b': self.env._observe(node1.state)[-1]    ,
-                     'v': -eval_node(node1)})
+                # self.save('node', node)
                 reward_to_state[s1] = node1.reward
                 if done:
                     best_finished = min((best_finished, node1), key=eval_node)
@@ -515,13 +582,11 @@ class Astar(Policy):
                     frontier.push(node1)
                     
         for i in range(expansions):
-            self.frontier_history.append([n[1].state for n in frontier])
+            self.save('frontier', [n[1].state for n in frontier])
             if frontier:
                 expand(frontier.pop())
             else:
                 break
-
-
 
         if frontier:
             # plan = min(best_finished, frontier.pop(), key=eval_node)
@@ -545,7 +610,7 @@ class Astar(Policy):
 
 
 
-class SearchPolicy(Policy):
+class ValSearchPolicy(Policy):
     """Searches for the maximum reward path using a model."""
     def __init__(self, V, replan=False, epsilon=0, noise=1, anneal=1, **kwargs):
         super().__init__(**kwargs)

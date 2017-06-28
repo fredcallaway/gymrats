@@ -36,12 +36,13 @@ def clear_screen():
     print(chr(27) + "[2J")
     clear_output()
 
-
+import time
 def show_path(env, trace, render='human'):
-    env._state = trace['_state']
+    env.reset()
     env.render(mode=render)
     for a in trace['actions']:
         env.step(a)
+        input('>')
         env.render(mode=render)
 
 
