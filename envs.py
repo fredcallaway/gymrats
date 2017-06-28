@@ -122,14 +122,20 @@ class GridWorld(gym.Env):
     GOAL = 2
     AGENT = 3
 
-    def __init__(self, spec, move_cost=0.00, crash_cost=0, goal_reward=1, init_state=(1,1), goal=None):
+    def __init__(self, kind='maze', size=None, spec=None, rewards=None, 
+                 move_cost=0.00, crash_cost=0, goal_reward=1, goal=None):
         # self.size = size
+        self.kind = kind
         self.spec = spec
-        self.size = size = spec.shape[0]
+        self.random_spec = spec is None
+        self.size = size or spec.shape[0]
+        self.shape = (size, size)
         self.move_cost = - abs(move_cost)
         self.crash_cost = - abs(crash_cost)
         self.goal_reward = goal_reward
-        self.init_state = init_state
+        self.rewards = rewards
+        self.random_rewards = rewards is None
+        
         self.goal = goal
         self.one_hot = False
 
@@ -153,15 +159,31 @@ class GridWorld(gym.Env):
         return [seed]
 
     def _reset(self):
-        m = Maze(self.size, self.size)
-        m = Maze(self.size, self.size)
-        spec = np.stack(m.array)
-        goal = m.farthest_point
-        spec[goal] = self.GOAL
-        self.spec = spec
-        self.goal = goal
-        self._state = self.init_state
+        self.done = False
+        init_func = getattr(self, '_init_{}'.format(self.kind))
+        init_func()
+        return self._state
+    
+    def _init_maze(self):
+        self._state = (1, 1)
+        if self.random_spec:
+            m = Maze(self.size, self.size)
+            spec = np.stack(m.array)
+            goal = m.farthest_point
+            spec[goal] = self.GOAL
+            self.spec = spec
+            self.goal = goal
         # return self._observe(self._state)
+
+    def _init_pain(self):
+        nr, nc = self.shape
+        self.goal = (nr-1, nc-1)
+        self._state = (0, 0)
+        if self.random_spec:
+            self.spec = np.zeros(self.shape)
+            self.spec[self.goal] = self.GOAL
+        if self.random_rewards:
+            self.rewards = -np.random.random(self.shape)
 
     def _observe(self, state=None):
         row, col = self._state if state is None else state
@@ -174,10 +196,10 @@ class GridWorld(gym.Env):
         state = self._state if state is None else state
         return state
 
-    def _done(self, state=None):
-        state = self._state if state is None else state
-        row, col = self.location(state)
-        return self.spec[row, col] == self.GOAL
+    # def _done(self, state=None):
+    #     state = self._state if state is None else state
+    #     row, col = self.location(state)
+    #     return (self.spec[row, col] == self.GOAL)
 
     def _move(self, loc, a):
         row, col = row1, col1 = loc
@@ -193,32 +215,38 @@ class GridWorld(gym.Env):
 
     def _step(self, a):
         reward = 0
-        done = self._done(self._state)
-        if not done:
+        if not self.done:
             row, col = self._move(self.location(), a)
             if self.spec[row, col] == self.WALL:
                 reward = self.crash_cost
             elif self.spec[row, col] == self.GOAL:
                 reward = self.goal_reward
-                done = True
+                self.done = True
             else:
-                reward = self.move_cost
                 self._state = (row, col)
-                done = self._done(self._state)
+                if self.rewards is not None:
+                    reward += self.rewards[row, col]
+                reward += self.move_cost
 
-        return self._observe(self._state), reward, done, {}
+        return self._observe(self._state), reward, self.done, {}
 
     def _render(self, mode='human', close=False):
         if close:
             return
+        from matplotlib import colors
+        from matplotlib import pyplot as plt
         row, col = self.location()
+        
+        if self.kind == 'pain':
+            plt.imshow(self.rewards, aspect='equal', cmap='Reds_r')
+            return
+
         spec = self.spec.copy()
         spec[row, col] = self.AGENT
         if mode == 'array':
             return spec
+
         # sns.set_palette('muted', color_codes=True)
-        from matplotlib import colors
-        from matplotlib import pyplot as plt
         cdef = ['#ffffff', '#111111', '#FC4754', '#4A74FF']
         cmap = colors.ListedColormap(cdef)
         bounds = np.arange(cmap.N + 1)
@@ -237,82 +265,6 @@ class GridWorld(gym.Env):
 
 
 from maze import Maze
-
-    # def encode(x):
-    #     s = 0
-    #     for f, n in zip(x, fs):
-    #         s *= n
-    #         s += f
-    #     return s
-            
-    # def decode(s):
-    #     x = []
-    #     for n in reversed(fs):
-    #         x.append(s % n)
-    #         s //= n
-    #     return tuple(reversed(x))
-        # super().__init__()
-
-from utils import PriorityQueue
-from agents import Model
-
-class MetaSearchEnv(gym.Env):
-    """A meta-MDP for searching with a deterministic transition model."""
-    Node = namedtuple('Node', ('state', 'path', 'reward', 'done'))
-    State = namedtuple('State', ('frontier', 'reward_to_state', 'best_done'))
-
-    def __init__(self, env, eval_node, expansion_cost=0.01):
-        super().__init__()
-        self.env =  env
-        self.expansion_cost = - abs(expansion_cost)
-        self.model = Model(env)
-        self.eval_node = eval_node
-
-    def _reset(self):
-        start = self.Node(self.env._state, [], 0, False)
-        frontier = PriorityQueue(key=self.eval_node)
-        frontier.push(start)
-        reward_to_state = defaultdict(lambda: -np.inf)
-        best_done = None
-        # Warning: state is mutable (and we mutate it!)
-        self._state = self.State(frontier, reward_to_state, best_done)
-        return self._state
-
-    def _step(self, action):
-        """Expand a node in the frontier."""
-        if action is 'TERM':
-            return self._make_plan(), 0, True, {}
-        else:
-            return self._expand_node(action), self.expansion_cost, False, {}
-
-    def _make_plan(self):
-        frontier, reward_to_state, best_done = self._state
-
-        if best_done:
-            return best_done.path
-        else:
-            raise RuntimeError('Cannot make plan.')
-        # elif frontier:
-        #     plan = min(best_done, frontier.pop(), key=eval_node)
-        #     plan = frontier.pop()
-
-    def _expand_node(self, node):
-        frontier, reward_to_state, best_done = self._state
-        s0, p0, r0, _ = node
-
-        for a, s1, r, done in self.model.options(s0):
-            node1 = self.Node(s1, p0 + [a], r0 + r, done)
-            if node1.reward <= reward_to_state[s1]:
-                continue  # cannot be better than an existing node
-            reward_to_state[s1] = node1.reward
-            if done:
-                # return node1  # ASSUMPTION: only one path to goal
-                best_done = min((best_done, node1), key=self.eval_node)
-            else:
-                frontier.push(node1)
-
-        self._state = self.State(frontier, reward_to_state, best_done)
-        return self._state
         
 
 class LinearEnv(DiscreteEnv):

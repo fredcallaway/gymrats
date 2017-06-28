@@ -1,23 +1,8 @@
 from IPython.display import clear_output
 import itertools as it
+
 def join(*args, sep=' '):
     return sep.join(map(str, args))
-
-
-def run_episode(agent, env, max_steps=500, render=False):
-    observation = env.reset()
-    score = 0
-
-    for _ in range(max_steps):
-        action = agent.act(observation)
-        if render:
-            env.render()
-        observation, reward, done, info = env.step(action)
-        score += reward
-        if done:
-            break
-    
-    return score, done
 
 
 def logged(condition=lambda r: True):
@@ -56,6 +41,22 @@ class PriorityQueue(list):
         
     def push(self, item):
         heapq.heappush(self, (self.key(item), item))
+
+
+    # def encode(x):
+    #     s = 0
+    #     for f, n in zip(x, fs):
+    #         s *= n
+    #         s += f
+    #     return s
+            
+    # def decode(s):
+    #     x = []
+    #     for n in reversed(fs):
+    #         x.append(s % n)
+    #         s //= n
+    #     return tuple(reversed(x))
+        # super().__init__()
 
 def dict_product(d):
     """All possible combinations of values in lists in `d`"""

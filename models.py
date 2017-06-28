@@ -52,7 +52,20 @@ class BayesianRegression(FunctionApproximator):
         var = self.sigma_y ** 2 + (x * self.sigma_w * x).sum()
         return mean, var
 
-
+class Network(object):
+    """docstring for Network"""
+    def __init__(self, shape):
+        super().__init__()
+        self.shape = shape
+        self.net = Sequential([
+            Dense(60, input_dim=shape[0], activation='relu'),
+            Dense(40, activation='relu'),
+            Dense(20, activation='relu'),
+            Dense(10, activation='relu'),
+            Dense(shape[1], activation='linear')
+        ])
+        self.net.compile(optimizer='rmsprop', loss='mse')
+      
 
 class LinearSGD(object):
     """Learns a linear approximation by SGD."""

@@ -15,6 +15,8 @@ from toolz.curried import *
 # ========= Agents ========= #
 # ========================== #
 
+class RegistrationError(Exception): pass
+
 class Agent(ABC):
     """An agent that can run openai gym environments."""
     def __init__(self):
@@ -32,18 +34,23 @@ class Agent(ABC):
         """Attaches a component or env to this agent."""
         if hasattr(obj, 'step'):  # gym Env
             self.env = obj
-        elif isinstance(obj, Policy):
+        elif hasattr(obj, 'act'):
             self.policy = obj
             obj.attach(self)
-        elif isinstance(obj, ValueFunction):
+        elif hasattr(obj, 'predict'):
             self.value_functions.append(obj)
             obj.attach(self)
         else:
             raise ValueError('Cannot register {}'.format(obj))
 
     def run_episode(self, render=False, max_steps=1000, interact=False,
-                    verbose=False):
+                    verbose=False, reset=True):
         """Runs a single episode, returns a complete trace of the episode."""
+        if not self.env:
+            raise RegistrationError('No environment registered.')
+        if not self.policy:
+            raise RegistrationError('No policy registered.')
+
         self.log = print if verbose else (lambda *args: None)
 
         trace = self.ep_trace = defaultdict(list)
@@ -55,8 +62,10 @@ class Agent(ABC):
                     'finished': False,
                     'return': None
                 })
-
-        new_state = self.env.reset()
+        if reset:
+            new_state = self.env.reset()
+        else:
+            new_state = self.env._state
         # trace['_state'] = self.env._state
         self._start_episode(new_state)
         done = False
@@ -249,6 +258,9 @@ class ValueFunction(Component):
             return x
         else:
             return np.r_[1, s]
+
+    def predict(self, s):
+        return 0
      
 
 class ActionValueFunction(ValueFunction):
@@ -308,7 +320,7 @@ class LinearV(StateValueFunction):
         self.ep_trace['theta_v'] = self.model.theta[:, 0].copy()
 
 
-from models import BayesianRegression
+# from models import BayesianRegression
 class BayesianRegressionV(StateValueFunction):
     """Learns a linear V function by SGD."""
     def __init__(self, **kwargs):
@@ -446,80 +458,6 @@ class MemV(StateValueFunction):
 #     def theta(self):
 #         return self.model.coef_
 
-from envs import MetaSearchEnv
-
-class MetaSearchPolicy(Policy):
-    """A search policy with node expansion controlled by a meta-policy"""
-    Node = namedtuple('Node', ('state', 'path', 'reward', 'done'))
-    def __init__(self, meta_policy=None, replan=False, **kwargs):
-        super().__init__(**kwargs)
-        self.meta_policy = meta_policy
-        self.replan = replan
-        self.plan = iter(())
-
-    def start_episode(self, state):
-        super().start_episode(state)
-        self.history = Counter()
-        self.model = Model(self.env)
-
-    def act(self, state):
-        self.history[state] += 1
-        try:
-            if self.replan:
-                raise StopIteration()
-            else:
-                return next(self.plan)
-        except StopIteration:
-            self.plan = iter(self.make_plan(state))
-            return next(self.plan)
-
-    def meta_env(self):
-        return MetaSearchEnv(self.env, self.eval_node)
-
-    def heuristic(self, obs):
-        row, col = obs
-        g_row, g_col = self.env.goal
-        return self.env.move_cost * (abs(row - g_row) + abs(col - g_col))
-
-    def phi_node(self, node):
-        if node is None or not node.path:
-            return np.inf  # the empty plan has infinite cost
-        obs = self.env._observe(node.state)
-        value = 0 if node.done else self.heuristic(obs) * 1.001
-        boredom = - 0.1 * self.history[obs]
-        score = node.reward + value + boredom
-        return - score
-
-    def eval_node(self, node):
-        if node is None or not node.path:
-            return np.inf  # the empty plan has infinite cost
-        obs = self.env._observe(node.state)
-        value = 0 if node.done else self.heuristic(obs) * 1.001
-        boredom = - 0.1 * self.history[obs]
-        score = node.reward + value + boredom
-        return - score
-
-    def make_plan(self, state, expansions=5000):
-        meta_env = self.meta_env()
-        meta_state = meta_env.reset()
-        computation_cost = 0
-        
-        for i in range(expansions):
-            frontier, reward_to_state, best_done = meta_state
-            self.save('frontier', [n[1].state for n in frontier])
-            if best_done:
-                plan, r, done, info = meta_env.step('TERM')
-                computation_cost += r
-                return plan
-            elif frontier:
-                meta_state, r, done, info = meta_env.step(frontier.pop())
-                computation_cost += r
-            else:
-                raise RuntimeError('No plan found.')
-
-        assert 0
-
-from copy import copy
 
 
 class Astar(Policy):
