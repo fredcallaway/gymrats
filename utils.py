@@ -42,6 +42,10 @@ class PriorityQueue(list):
     def push(self, item):
         heapq.heappush(self, (self.key(item), item))
 
+def softmax(x):
+    ex = np.exp(x)
+    return ex / ex.sum()
+
 
     # def encode(x):
     #     s = 0

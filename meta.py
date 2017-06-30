@@ -5,6 +5,7 @@ from agents import Model
 import gym
 from agents import Agent, Policy
 from toolz import memoize, curry
+import itertools as it
 # from envs import 
 
 class MetaBestFirstSearchEnv(gym.Env):
@@ -165,20 +166,21 @@ class MetaBestFirstSearchPolicy(Policy):
             assert 0, 'no frontier'
 
 
-from sciy.stats import norm
-class MouselabEnv(object):
+class MouselabEnv(gym.Env):
     """MetaMDP for a tree with a discrete unobserved reward function."""
+    metadata = {'render.modes': ['human', 'array']}
     term_state = None
     def __init__(self, branch=2, height=2, reward=None, cost=0):
         self.branch = branch
         self.height = height
         self.cost = - abs(cost)
-        self.reward = reward if reward is not None else Normal(0, 1)
-        self.expected_reward = reward.expectation()
+        self.reward = reward if reward is not None else Normal(1, 1)
+        self.expected_reward = expectation(self.reward)
 
         self.tree = self._build_tree()
-        self.init = [self.reward] * len(self.tree)
+        self.init = (self.reward,) * len(self.tree)
         self.term_action = len(self.tree)
+        self.reset()
 
     def _reset(self):
         self._state = self.init
@@ -187,51 +189,33 @@ class MouselabEnv(object):
     def _step(self, action):
         if action == self.term_action:
             self._state = self.term_state
-            reward = self._terminate()
+            reward = self.terminate()
             done = True
-        elif self._state[action] is not self.unknown:
+        elif self._state[action] is not self.reward:  # already observed
             reward = self.cost
             done = False
-        else:
-            s1 = list(self._state)
-            s1[action] = self.reward.rvs()  # sample from reward distribution
-            self._state = tuple(s1)
+        else:  # observe a new node
+            s = list(self._state)
+            s[action] = s[action].sample()
+            self._state = tuple(s)
             reward = self.cost
             done = False
         return self._state, reward, done, {}
 
+    def encode(self, state):
+        pass
 
-    def _terminate(self, state=None):
+    def observe(self, node, state=None):
         state = state if state is not None else self._state
-        r = state[s]
-        if r is self.unknown:
-            r = self.expected_reward
-        future_reward = max((self.tree_V(state, s1) for s1 in self.tree[s]), default=0)
-        return r + future_reward
+        s = list(state)
+        s[node]
 
-    def _get_path(self, state, s):
-        if not self.tree[s]:
-            v = state[s]
-            if v is self.unknown:n
-                v = self.expected_reward
-            return v, [s]
-        v1, path = max((self._get_path(state, s1) for s1 in self.tree[s]))
-
-
-    def term_value(self, state=None):
-        """Returns the expected value of terminating computation given a belief state.
-
-        This is equal to the value of the initial state in the object-level MDP.
-        """
-        state = state if state is not None else self._state 
-        return self.tree_V(state, 0)
-
-    def tree_V(self, state, s):
+    def tree_V(self, s=0, state=None):
+        state = state if state is not None else self._state
         # includes the reward attained at state s (it's not really a value function)
         r = state[s]
-        if r is self.unknown:
-            r = self.expected_reward
-        future_reward = max((self.tree_V(state, s1) for s1 in self.tree[s]), default=0)
+        future_reward = max((self.tree_V(s1, state) for s1 in self.tree[s]), 
+                            default=0, key=expectation)
         return r + future_reward
 
     def subtree(self, state, n):
@@ -257,8 +241,58 @@ class MouselabEnv(object):
         expand(next(ids), 0)
         return T
 
+    def _render(self, mode='notebook', close=False):
+        from graphviz import Digraph
+        from IPython.display import display
+        import matplotlib as mpl
+        from matplotlib.colors import rgb2hex
+        if close:
+            return
+        
+        vmin = -2
+        vmax = 2
+        norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+        cmap = mpl.cm.get_cmap('RdYlGn')
+        colormap = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+        colormap.set_array(np.array([vmin, vmax]))
 
-import stats
+        def color(val):
+            # return '#9999ee'
+            return rgb2hex(colormap.to_rgba(val))
+        
+        # COLOR = {None: 'grey', np.inf: 'grey', 1: '#dd4444', 0: '#5555ee'}
+        dot = Digraph()
+        for x, ys in enumerate(self.tree):
+            r = self._state[x]
+            observed = not hasattr(self._state[x], 'sample')
+            c = color(r) if observed else 'grey'
+            l = str(r) if observed else '?'
+            dot.node(str(x), label=l, style='filled', color=c)
+            for y in ys:
+                dot.edge(str(x), str(y))
+        display(dot)
+
+
+def expectation(val):
+    if hasattr(val, 'expectation'):
+        return val.expectation()
+    else:
+        return val
+
+def sample(val):
+    if hasattr(val, 'sample'):
+        return val.sample()
+    else:
+        return val
+
+def cross(d1, d2, f):
+    outcomes = Counter()
+    for ((o1, p1), (o2, p2)) in it.product(d1, d2):
+        outcomes[f(o1, o2)] += p1 * p2
+
+    return Discrete(outcomes.keys(), outcomes.values())
+
+
 class Normal(object):
     """Normal distribution."""
     def __init__(self, mu, sigma):
@@ -266,11 +300,14 @@ class Normal(object):
         self.mu = mu
         self.sigma = sigma
 
+    def __repr__(self):
+        return 'Norm'
+
     def __add__(self, other):
-        if isinstance(other, (int, float)):
-            return Normal(self.mu + other, self.sigma)
-        else:
+        if isinstance(other, Normal):
             return Normal(self.mu + other.mu, self.sigma + other.sigma)
+        else:
+            return Normal(self.mu + other, self.sigma)
 
     def expectation(self):
         return self.mu
@@ -278,6 +315,41 @@ class Normal(object):
     def sample(self):
         return self.mu + self.sigma * np.random.randn()
 
+
+class Discrete(object):
+    """Discrete distribution."""
+    def __init__(self, vs, ps=None):
+        super().__init__()
+        self.vs = tuple(vs)
+        if ps is None:
+            self.ps = tuple(1/len(vs) for _ in range(len(vs)))
+        else:
+            self.ps = tuple(ps)
+
+    def __repr__(self):
+        return 'Cat'
+
+    def __iter__(self):
+        return zip(self.vs, self.ps)
+
+    def __len__(self):
+        return len(self.ps)
+
+    def __add__(self, other):
+        if isinstance(other, Discrete):
+            return cross(self, other, lambda s, o: s + o)
+        else:
+            return self.apply(lambda v: v + other)
+
+    def apply(self, f):
+        vs = tuple(f(v) for v in self.vs)
+        return Discrete(vs, self.ps)
+
+    def expectation(self):
+        return sum(p * v for p, v in zip(self.ps, self.vs))
+
+    def sample(self):
+        return np.random.choice(self.vs, p=self.ps)
       
       
 
