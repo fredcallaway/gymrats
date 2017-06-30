@@ -22,15 +22,18 @@ class Policy(Component):
         """Returns an action to take in the given state."""
         pass
 
+    def attach(self, agent):
+        if not hasattr(agent, 'env'):
+            raise ValueError('Must attach env before attaching policy.')
+        super().attach(agent)
+
+
 
 class RandomPolicy(Policy):
     """Chooses actions randomly."""
     
     def act(self, state):
         return self.env.action_space.sample()
-
-    def finish_episode(self, trace):
-        self.ep_trace['berries'] = self.env._observe()[-1]
 
 
 class MaxQPolicy(Policy):
@@ -53,71 +56,119 @@ class MaxQPolicy(Policy):
 
 from keras.layers import Dense
 from keras.models import Sequential
-from keras.optimizers import Adam
+from keras.optimizers import Adam, Nadam
 
 class AdvantageActorCritic(Policy):
     """docstring for AdvantageActorCritic"""
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.discount = 0.99
-        self.actor_lr = 0.001
-        self.critic_lr = 0.005
+    def __init__(self, actor_lr=0.001, critic_lr= 0.005, discount=.99, actor_lambda=1, critic_lambda=1, **kwargs):
+        super().__init__()
+        self.discount = discount
+        self.actor_lambda = actor_lambda
+        self.critic_lambda = critic_lambda
+        self.actor_lr = actor_lr
+        self.critic_lr = critic_lr
+
+        self._actor_discount = np.array([(self.discount * self.actor_lambda) ** i 
+                                         for i in range(5000)])
+        self._critic_discount = np.array([(self.discount * self.critic_lambda) ** i 
+                                          for i in range(5000)])
+
+        self.memory = deque(maxlen=100)
+        self.batch_size = 20
 
     def attach(self, agent):
         super().attach(agent)
         self.actor = self.build_actor()
         self.critic = self.build_critic()
-        # self.n_action = self.env.action_space.n
-
 
     def build_actor(self):
-        actor = Sequential()
-        actor.add(Dense(24, input_dim=self.state_size, activation='relu',
-                        kernel_initializer='he_uniform'))
-        actor.add(Dense(self.n_action, activation='softmax',
-                        kernel_initializer='he_uniform'))
+        actor = Sequential([
+            Dense(24, input_dim=self.state_size, activation='relu',
+                  kernel_initializer='he_uniform'),
+            # Dense(24, activation='relu',
+            #       kernel_initializer='he_uniform'),
+            Dense(self.n_action, activation='softmax',
+                  kernel_initializer='he_uniform')
+        ])
         # actor.summary()
         actor.compile(loss='categorical_crossentropy',
-                      optimizer=Adam(lr=self.actor_lr))
+                      optimizer=Nadam(self.actor_lr))
         return actor
 
     # critic: state is input and value of state is output of model
     def build_critic(self):
-        critic = Sequential()
-        critic.add(Dense(24, input_dim=self.state_size, activation='relu',
-                         kernel_initializer='he_uniform'))
-        critic.add(Dense(1, activation='linear',
-                         kernel_initializer='he_uniform'))
+        critic = Sequential([
+            Dense(24, input_dim=self.state_size, activation='relu',
+                  kernel_initializer='he_uniform'),
+            # Dense(24, activation='relu',
+            #       kernel_initializer='he_uniform'),
+            Dense(1, activation='linear',
+                  kernel_initializer='he_uniform')
+        ])
         # critic.summary()
-        critic.compile(loss="mse", optimizer=Adam(lr=self.critic_lr))
+        critic.compile(loss="mse", optimizer=Nadam(self.critic_lr))
         return critic
-
-    def start_episode(self, state):
-        self.action_probs = []
 
     def act(self, state):
         policy = self.actor.predict(state.reshape(1, -1)).flatten()
         return np.random.choice(self.n_action, 1, p=policy)[0]
 
-    # update policy network every episode
+    # update networks every episode
     def finish_episode(self, trace):
+        if len(self.memory) >= self.batch_size:
+            batch = np.random.choice(self.memory, self.batch_size)
+            batch.append(trace)
+            self.train_batch(batch)
+        else:
+            self.train(trace)
+
+            
+
+
+    def train_batch(self, traces):
+        def data():
+            for trace in traces:
+                yield trace['states'][:-1], trace['actions'], trace['rewards']
+
+        state, action, reward = map(np.concatenate, zip(*data()))
+        n_step = len(state)
+        # See Schulman et al. 2016 ICLR paper
+        value = np.r_[self.critic.predict(state).flat, 0]  # final state value
+        delta = reward + self.discount * value[1:] - value[:-1]  # pg. 4
+        advantage = np.zeros((n_step, self.n_action))
+        value_target = np.zeros((n_step, 1))
+
+        for i in range(n_step):
+            adv = np.sum(delta[i:] * self._actor_discount[:n_step-i])
+            advantage[i, action[i]] = adv
+            val_error = np.sum(delta[i:] * self._critic_discount[:n_step-i])
+            value_target[i, 0] = value[i] + val_error
+            # value_target[i, 0] = reward[i] + self.discount * value[i+1]
+
+        self.actor.fit(state, advantage, epochs=1, verbose=0)
+        self.critic.fit(state, value_target, epochs=1, verbose=0)
+
+    def train(self, trace):
         state = np.stack(trace['states'][:-1])  # ignore final state
         action = trace['actions']
         reward = trace['rewards']
         n_step = len(state)
 
+        # See Schulman et al. 2016 ICLR paper
         value = np.r_[self.critic.predict(state).flat, 0]  # final state value
+        delta = reward + self.discount * value[1:] - value[:-1]  # pg. 4
         advantage = np.zeros((n_step, self.n_action))
         value_target = np.zeros((n_step, 1))
 
         for i in range(n_step):
-            G_t = reward[i] + self.discount * value[i+1]
-            advantage[i, action[i]] = G_t - value[i]
-            value_target[i, 0] = G_t
+            adv = np.sum(delta[i:] * self._actor_discount[:n_step-i])
+            advantage[i, action[i]] = adv
+            val_error = np.sum(delta[i:] * self._critic_discount[:n_step-i])
+            value_target[i, 0] = value[i] + val_error
+            # value_target[i, 0] = reward[i] + self.discount * value[i+1]
 
         self.actor.fit(state, advantage, epochs=1, verbose=0)
         self.critic.fit(state, value_target, epochs=1, verbose=0)
-        
 
 
 class Astar(Policy):

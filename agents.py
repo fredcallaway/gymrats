@@ -87,15 +87,15 @@ class Agent(ABC):
 
         trace['states'].append(new_state)  # final state
         trace['return'] = sum(trace['rewards'])
-        trace = dict(trace)
         self._finish_episode(trace)
         self.i_episode += 1
         return dict(trace)
 
-    def run_many(self, n_episodes, track=(), **kwargs):
+    def run_many(self, n_episodes, pbar=True, track=(), **kwargs):
         """Runs several episodes, returns a summary of results."""
         data = defaultdict(list)
-        for _ in tnrange(n_episodes):
+        range_ = tnrange if pbar else range
+        for _ in range_(n_episodes):
             trace = self.run_episode(**kwargs)
             data['n_steps'].append(len(trace.pop('states')))
             # data['i_episode'].append(trace.pop('i_episode'))
@@ -106,7 +106,7 @@ class Agent(ABC):
             for k, v in trace.items():
                 data[k].append(v)
 
-        return data
+        return dict(data)
 
     def _start_episode(self, state):
         self.policy.start_episode(state)

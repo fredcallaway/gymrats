@@ -1,9 +1,9 @@
 from collections import namedtuple, defaultdict, deque, Counter
 import numpy as np
 from utils import PriorityQueue
-from agents import Model
+from agents import Agent, Model
 import gym
-from agents import Agent, Policy
+from policies import Policy
 from toolz import memoize, curry
 import itertools as it
 # from envs import 
@@ -166,6 +166,7 @@ class MetaBestFirstSearchPolicy(Policy):
             assert 0, 'no frontier'
 
 
+
 class MouselabEnv(gym.Env):
     """MetaMDP for a tree with a discrete unobserved reward function."""
     metadata = {'render.modes': ['human', 'array']}
@@ -182,17 +183,25 @@ class MouselabEnv(gym.Env):
         self.term_action = len(self.tree)
         self.reset()
 
+        self.action_space = gym.spaces.Discrete(len(self.tree) + 1)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=len(self.tree))
+
     def _reset(self):
         self._state = self.init
-        return self._state
+        return self._observe(self._state)
 
     def _step(self, action):
+        if self._state is self.term_state:
+            print('BAD')
+            return None, 0, True, {}
+        assert self._state is not None, '2'
         if action == self.term_action:
+            reward = self.term_reward().sample()
             self._state = self.term_state
-            reward = self.terminate()
             done = True
         elif self._state[action] is not self.reward:  # already observed
             reward = self.cost
+            # reward = -1
             done = False
         else:  # observe a new node
             s = list(self._state)
@@ -200,7 +209,21 @@ class MouselabEnv(gym.Env):
             self._state = tuple(s)
             reward = self.cost
             done = False
-        return self._state, reward, done, {}
+        return self._observe(self._state), reward, done, {}
+
+    def _observe(self, state=None):
+        if state is None:
+            return np.full(len(self.tree), np.nan)
+        state = state if state is not None else self._state
+        # Is each node observed?
+        return np.array([1. if not hasattr(x, 'sample') else 0.
+                         for x in state])
+
+    def term_reward(self, state=None):
+        state = state if state is not None else self._state
+        # state = self._state
+        assert state is not None
+        return self.tree_V(0, state)
 
     def encode(self, state):
         pass
@@ -215,8 +238,8 @@ class MouselabEnv(gym.Env):
         # includes the reward attained at state s (it's not really a value function)
         r = state[s]
         future_reward = max((self.tree_V(s1, state) for s1 in self.tree[s]), 
-                            default=0, key=expectation)
-        return r + future_reward
+                            default=Discrete((0,)), key=expectation)
+        return future_reward + r
 
     def subtree(self, state, n):
         """Returns the substree of the belief state with root n."""
