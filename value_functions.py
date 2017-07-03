@@ -146,23 +146,16 @@ class BayesianRegressionQ(StateValueFunction):
         states = []
         actions = []
         qs = []
-        targets = []
         for i in idx:
             if self.memory.actions[i] is None:
                 continue  # can't update for final state
             states.append(self.memory.states[i])
             actions.append(self.memory.actions[i])
-
-            if self.memory.actions[i+1] is None:
-                value = 0
-            else:
-                # value = self.model.predict(self.memory.states[i+1]).max()
-                value = self.memory.returns[i+1]
-            qs.append(self.memory.rewards[i] + value)
+            qs.append(self.memory.rewards[i] + self.model.predict([self.memory.states[i+1]]).max())
             
 
         actions = to_categorical(actions, num_classes=self.n_action)
-        self.model.update(np.stack(states), actions, np.array(qs))
+        self.model.update(np.stack(states), actions, np.array(qs), 1)
 
 
 

@@ -52,7 +52,7 @@ class BayesianRegression(FunctionApproximator):
         self.sigma_w = self.qw.scale.eval()
         self._sigma_w_T = self.sigma_w.T
     
-    def update(self, X, y, n_iter=10):
+    def update(self, X, y, n_iter=1):
         for _ in range(n_iter):
             info_dict = self.inference.update({self._X: X, self._y_obs: y})
             # self.inference.print_progress(info_dict)
