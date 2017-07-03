@@ -15,6 +15,7 @@ from agents import Component
 class ValueFunction(Component):
     """Learns values."""
     def __init__(self, learn_rate=.1, discount=1):
+        super().__init__()
         self.discount = discount
         self.learn_rate = learn_rate
 
@@ -31,6 +32,47 @@ class ValueFunction(Component):
      
 
 class ActionValueFunction(ValueFunction):
+    """Values of state action pairs."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.model = None
+
+    def experience(self, s0, a, s1, r, done):
+        x0, x1 = self.features(s0), self.features(s1)
+        target = self.model.predict(x1)
+        target[a] = r + self.discount * np.max(self.model.predict(x1))
+        self.model.update(x0, target)
+
+    def predict(self, s):
+        x = self.features(s)
+        return self.model.predict(x)
+
+      
+
+
+
+class NeuralQ(ActionValueFunction):
+    """Neural network approximation of Q function."""
+    def __init__(self, arg):
+        super().__init__()
+        self.model = self._build_model()
+
+    def _build_model(self):
+        actor = Sequential([
+            Dense(24, input_dim=self.state_size, activation='relu',
+                  kernel_initializer='he_uniform'),
+            # Dense(24, activation='relu',
+            #       kernel_initializer='he_uniform'),
+            Dense(self.n_action, activation='softmax',
+                  kernel_initializer='he_uniform')
+        ])
+        # actor.summary()
+        actor.compile(loss='mse',
+                      optimizer=Nadam(self.learn_rate))
+        return actor
+      
+
+class LinearQ(ValueFunction):
     """Learns a linear Q function by SGD."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -60,38 +102,56 @@ class StateValueFunction(ValueFunction):
         super().__init__(**kwargs)
 
 
-# from models import BayesianRegression
+from models import BayesianRegression
 class BayesianRegressionV(StateValueFunction):
     """Learns a linear V function by SGD."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.model = None
-        self.states = []
-        self.returns = []
 
     def attach(self, agent):
         super().attach(agent)
-        sx = len(self.features(self.env.reset()))
-        self.model = BayesianRegression(np.zeros(sx), sigma_w=1)
+        self.model = BayesianRegression(np.zeros(self.state_size), sigma_w=10)
 
-    def predict(self, s):
-        x = self.features(s)
-        return self.model.predict(x)
+    def predict(self, state, return_sigma=False):
+        return self.model.predict(return_sigma=return_sigma)
+
+    # def finish_episode(self, trace):
+    #     for batch in self.memory.batch(10):
+    #         states, rewards, returns = batch
+
+    #     self.model.update(batch['states'][:-1], batch['returns'])  # don't learn about final state
+    #     self.save('w', self.model.w.copy())
+    #     self.save('sigma_w', self.model.sigma_w.copy())
+
+
+from models import BayesianRegression
+class BayesianRegressionQ(StateValueFunction):
+    """Learns a linear V function by SGD."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.model = None
+
+    def attach(self, agent):
+        super().attach(agent)
+        self.model = BayesianRegression(np.zeros((self.state_size, self.n_action)), sigma_w=10.)
+
+    def predict(self, state, return_sigma=False):
+        return self.model.predict(return_sigma=return_sigma)
 
     def finish_episode(self, trace):
-        # import ipdb, time; ipdb.set_trace(); time.sleep(0.5)
-        states = np.array([self.features(s).astype('float32') for s in trace['states']])
-        returns = get_returns(trace['rewards'])
-        returns.append(0) # return from final state
-
-        self.states.extend(states)
-        self.returns.extend(returns)
-
+        exps = self.memory.batch(100)
+        states, returns, rewards = map(np.array, zip(*exps))
         self.model.update(states, returns)
-        self.ep_trace['theta_v'] = self.model.w.copy()
-        self.ep_trace['sigma_w'] = self.model.sigma_w.copy()
+        # for ep in self.memory.episodes(10):
+        #     print(batch)
+        #     self.model.update(batch['states']
+        #                       batch['returns'])
 
- 
+        # self.save('w', self.model.w.copy())
+        # self.save('sigma_w', self.model.sigma_w.copy())
+
+
 
 
 class TDLambdaV(StateValueFunction):

@@ -30,6 +30,29 @@ GOAL = 2
 # done: True if the episode is over else False
 Result = namedtuple('Result', ['p', 's1', 'r', 'done'])
 
+class ContextualBandit(gym.Env):
+    """A one-step bandit problem with clues."""
+    def __init__(self, n_feature, n_arm, payout_noise=1):
+        self.n_feature = n_feature
+        self.n_arm = n_arm
+        self.payout_noise = payout_noise
+        self.w = np.random.normal(size=(self.n_feature, self.n_arm))
+        self.action_space = spaces.Discrete(n_arm)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=n_feature)
+        self.final_state = np.full(n_feature, np.nan)
+        self._reset()
+
+    def _reset(self):
+        self._state = np.random.randn(self.n_feature)
+        return self._state
+
+    def _step(self, action):
+        payout = self._state @ self.w + np.random.randn(self.n_arm) * self.payout_noise
+        return self.final_state, payout[action], True, {}
+
+
+
+
 class ForageWorld(gym.Env):
     """Gather berries."""
     metadata = {'render.modes': ['human']}

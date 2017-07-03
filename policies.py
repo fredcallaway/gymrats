@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from utils import clear_screen, PriorityQueue
 import time
 np.set_printoptions(precision=3, linewidth=200)
-
+from scipy import stats
 from tqdm import tqdm, trange, tnrange
 from copy import deepcopy
 
@@ -54,24 +54,34 @@ class MaxQPolicy(Policy):
             return np.argmax(q + noise)
 
 
+class MaxQSamplePolicy(Policy):
+    """Chooses the action with highest sampled Q value."""
+    def __init__(self, Q, **kwargs):
+        super().__init__(**kwargs)
+        self.Q = Q
+
+    def act(self, state):
+        q, sigma = self.Q.predict(state, return_sigma=True)
+        q_samples = stats.norm(q, sigma).rvs()
+        return np.argmax(q_samples)
+
+
 from keras.layers import Dense
 from keras.models import Sequential
 from keras.optimizers import Adam, Nadam
 
-class AdvantageActorCritic(Policy):
-    """docstring for AdvantageActorCritic"""
-    def __init__(self, actor_lr=0.001, critic_lr= 0.005, discount=.99, actor_lambda=1, critic_lambda=1, **kwargs):
+class ActorCritic(Policy):
+    """docstring for ActorCritic"""
+    def __init__(self, critic, actor_lr=0.001, discount=.99, actor_lambda=1, **kwargs):
         super().__init__()
+        self.critic = critic
         self.discount = discount
         self.actor_lambda = actor_lambda
-        self.critic_lambda = critic_lambda
         self.actor_lr = actor_lr
-        self.critic_lr = critic_lr
 
         self._actor_discount = np.array([(self.discount * self.actor_lambda) ** i 
                                          for i in range(5000)])
-        self._critic_discount = np.array([(self.discount * self.critic_lambda) ** i 
-                                          for i in range(5000)])
+    
 
         self.memory = deque(maxlen=100)
         self.batch_size = 20
@@ -79,7 +89,6 @@ class AdvantageActorCritic(Policy):
     def attach(self, agent):
         super().attach(agent)
         self.actor = self.build_actor()
-        self.critic = self.build_critic()
 
     def build_actor(self):
         actor = Sequential([
@@ -95,20 +104,6 @@ class AdvantageActorCritic(Policy):
                       optimizer=Nadam(self.actor_lr))
         return actor
 
-    # critic: state is input and value of state is output of model
-    def build_critic(self):
-        critic = Sequential([
-            Dense(24, input_dim=self.state_size, activation='relu',
-                  kernel_initializer='he_uniform'),
-            # Dense(24, activation='relu',
-            #       kernel_initializer='he_uniform'),
-            Dense(1, activation='linear',
-                  kernel_initializer='he_uniform')
-        ])
-        # critic.summary()
-        critic.compile(loss="mse", optimizer=Nadam(self.critic_lr))
-        return critic
-
     def act(self, state):
         policy = self.actor.predict(state.reshape(1, -1)).flatten()
         return np.random.choice(self.n_action, 1, p=policy)[0]
@@ -119,11 +114,6 @@ class AdvantageActorCritic(Policy):
             batch = np.random.choice(self.memory, self.batch_size)
             batch.append(trace)
             self.train_batch(batch)
-        else:
-            self.train(trace)
-
-            
-
 
     def train_batch(self, traces):
         def data():
@@ -256,6 +246,116 @@ class Astar(Policy):
         self.save('plan', plan)
         return plan.path
 
+
+class GeneralizedAdvantageEstimation(Policy):
+    """docstring for GeneralizedAdvantageEstimation"""
+    def __init__(self, actor_lr=0.001, critic_lr= 0.005, discount=.99, actor_lambda=1, critic_lambda=1, **kwargs):
+        super().__init__()
+        self.discount = discount
+        self.actor_lambda = actor_lambda
+        self.critic_lambda = critic_lambda
+        self.actor_lr = actor_lr
+        self.critic_lr = critic_lr
+
+        self._actor_discount = np.array([(self.discount * self.actor_lambda) ** i 
+                                         for i in range(5000)])
+        self._critic_discount = np.array([(self.discount * self.critic_lambda) ** i 
+                                          for i in range(5000)])
+
+        self.memory = deque(maxlen=100)
+        self.batch_size = 20
+
+    def attach(self, agent):
+        super().attach(agent)
+        self.actor = self.build_actor()
+        self.critic = self.build_critic()
+
+    def build_actor(self):
+        actor = Sequential([
+            Dense(24, input_dim=self.state_size, activation='relu',
+                  kernel_initializer='he_uniform'),
+            # Dense(24, activation='relu',
+            #       kernel_initializer='he_uniform'),
+            Dense(self.n_action, input_dim=self.state_size, activation='softmax',
+                  kernel_initializer='he_uniform')
+        ])
+        # actor.summary()
+        actor.compile(loss='categorical_crossentropy',
+                      optimizer=Nadam(self.actor_lr))
+        return actor
+
+    # critic: state is input and value of state is output of model
+    def build_critic(self):
+        critic = Sequential([
+            Dense(24, input_dim=self.state_size, activation='relu',
+                  kernel_initializer='he_uniform'),
+            # Dense(24, activation='relu',
+            #       kernel_initializer='he_uniform'),
+            Dense(1, input_dim=self.state_size, activation='linear',
+                  kernel_initializer='he_uniform')
+        ])
+        # critic.summary()
+        critic.compile(loss="mse", optimizer=Nadam(self.critic_lr))
+        return critic
+
+    def act(self, state):
+        policy = self.actor.predict(state.reshape(1, -1)).flatten()
+        return np.random.choice(self.n_action, 1, p=policy)[0]
+
+    # update networks every episode
+    def finish_episode(self, trace):
+        if len(self.memory) >= self.batch_size:
+            batch = np.random.choice(self.memory, self.batch_size)
+            batch.append(trace)
+            self.train_batch(batch)
+        else:
+            self.train(trace)
+
+    def train_batch(self, traces):
+        def data():
+            for trace in traces:
+                yield trace['states'][:-1], trace['actions'], trace['rewards']
+
+        state, action, reward = map(np.concatenate, zip(*data()))
+        n_step = len(state)
+        # See Schulman et al. 2016 ICLR paper
+        # value = np.r_[self.critic.predict(state).flat, 0]  # final state value
+        value = np.r_[state.sum(1), 0]
+        delta = reward + self.discount * value[1:] - value[:-1]  # pg. 4
+        advantage = np.zeros((n_step, self.n_action))
+        value_target = np.zeros((n_step, 1))
+
+        for i in range(n_step):
+            adv = np.sum(delta[i:] * self._actor_discount[:n_step-i])
+            advantage[i, action[i]] = adv
+            val_error = np.sum(delta[i:] * self._critic_discount[:n_step-i])
+            value_target[i, 0] = value[i] + val_error
+            # value_target[i, 0] = reward[i] + self.discount * value[i+1]
+
+        self.actor.fit(state, advantage, epochs=1, verbose=0)
+        self.critic.fit(state, value_target, epochs=1, verbose=0)
+
+    def train(self, trace):
+        state = np.stack(trace['states'][:-1])  # ignore final state
+        action = trace['actions']
+        reward = trace['rewards']
+        n_step = len(state)
+
+        # See Schulman et al. 2016 ICLR paper
+        value = np.r_[self.critic.predict(state).flat, 0]  # final state value
+        delta = reward + self.discount * value[1:] - value[:-1]  # pg. 4
+        advantage = np.zeros((n_step, self.n_action))
+        value_target = np.zeros((n_step, 1))
+
+        for i in range(n_step):
+            adv = np.sum(delta[i:] * self._actor_discount[:n_step-i])
+            advantage[i, action[i]] = adv
+            val_error = np.sum(delta[i:] * self._critic_discount[:n_step-i])
+            value_target[i, 0] = value[i] + val_error
+            # value_target[i, 0] = reward[i] + self.discount * value[i+1]
+
+        self.actor.fit(state, advantage, epochs=1, verbose=0)
+        self.critic.fit(state, value_target, epochs=1, verbose=0)
 
 
 class ValSearchPolicy(Policy):

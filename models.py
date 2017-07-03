@@ -16,25 +16,36 @@ class FunctionApproximator(object):
         pass
 
 
+def positive_variable(shape=(), init=0):
+    return tf.sqrt(tf.exp(tf.Variable(tf.zeros(shape))))
+
+def variable(shape=(), init=0):
+    return tf.Variable(tf.zeros(shape))
+
 class BayesianRegression(FunctionApproximator):
     """Bayesian linear regression."""
-    def __init__(self, w, sigma_y=1.0, sigma_w=100):
+    def __init__(self, w_prior, sigma_w=100.):
         super().__init__()
-        self.sigma_y = float(sigma_y)
-        D = len(w)
-        X = self._X = tf.placeholder(tf.float32, [None, D])
-        w = Normal(loc=tf.zeros(D), scale=tf.ones(D) * sigma_w)
-        y = Normal(loc=ed.dot(X, w), scale=sigma_y)
-        y_obs = self._y_obs = tf.placeholder(tf.float32, [None])
+        w_prior = np.atleast_2d(w_prior)
+        shape = w_prior.shape
 
-        qw = self.qw = Normal(loc=tf.Variable(tf.random_normal([D]) * 0.01),
-                              scale=tf.nn.softplus(tf.Variable(tf.random_normal([D]) * 0.01)))
+        # Linear regression model.
+        self._X = tf.placeholder(tf.float32, [None, shape[0]])
+        w = Normal(loc=tf.zeros(shape), scale=sigma_w)
+        # Observation noise is optimized as a point estimate
+        # so it doesn't have an associated distribution.
+        self._sigma_y = positive_variable()
+        y = Normal(loc=tf.matmul(self._X, w), scale=self._sigma_y)
+        self._y_obs = tf.placeholder(tf.float32, [None, shape[1]])
 
-        self.inference = ed.KLqp({w: qw}, data={y: y_obs})
+        # Varitional inference.
+        qw = self.qw = Normal(loc=variable((shape)), scale=positive_variable(()))
+        self.inference = ed.KLqp({w: qw}, data={y: self._y_obs})
         self.inference.initialize(n_iter=100, n_samples=5)
         tf.global_variables_initializer().run()
         self.w = self.qw.loc.eval()
         self.sigma_w = self.qw.scale.eval()
+        self._sigma_w_T = self.sigma_w.T
     
     def update(self, X, y, n_iter=1):
         for _ in range(n_iter):
@@ -42,28 +53,27 @@ class BayesianRegression(FunctionApproximator):
             # self.inference.print_progress(info_dict)
         self.w = self.qw.loc.eval()
         self.sigma_w = self.qw.scale.eval()
-        # n_sample = 100
-        # self._ws = self.qw.sample(n_sample).eval()
-        # self._bs = self.qb.sample(n_sample).eval()
 
-    def predict(self, x):
-        # return np.sum(x * self._ws, axis=1) + self._bs
-        mean = self.w @ x
-        var = self.sigma_y ** 2 + (x * self.sigma_w * x).sum()
-        return mean, var
+    def predict(self, x, return_var=False):
+        mean = x @ self.w
+        if return_var:
+            var = (x * self._sigma_w_T * x).sum(1)
+            return mean, var
+        else:
+            return mean
 
 class Network(object):
     """docstring for Network"""
     def __init__(self, shape):
         super().__init__()
         self.shape = shape
-        self.net = Sequential([
-            Dense(60, input_dim=shape[0], activation='relu'),
-            Dense(40, activation='relu'),
-            Dense(20, activation='relu'),
-            Dense(10, activation='relu'),
-            Dense(shape[1], activation='linear')
-        ])
+        model = Sequential()
+        model.add(Dense(24, input_dim=shape[0], activation='relu',
+                        kernel_initializer='he_uniform'))
+        model.add(Dense(24, activation='relu',
+                        kernel_initializer='he_uniform'))
+        model.add(Dense(shape[1], activation='linear',
+                        kernel_initializer='he_uniform'))
         self.net.compile(optimizer='rmsprop', loss='mse')
       
 

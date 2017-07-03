@@ -86,15 +86,14 @@ class FixedPlanPolicy(Policy):
     Node = namedtuple('Node', ('state', 'path', 'reward', 'done'))
     def __init__(self, plan, **kwargs):
         super().__init__(**kwargs)
-        self.plan = iter(plan)
+        self._plan = plan
 
     def start_episode(self, state):
         super().start_episode(state)
-        self.history = Counter()
+        self.plan = iter(self._plan)
         # self.model = Model(self.env)
 
     def act(self, state):
-        self.history[state] += 1
         return next(self.plan)
 
 def heuristic(env, obs):
