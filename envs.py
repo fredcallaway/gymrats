@@ -32,10 +32,11 @@ Result = namedtuple('Result', ['p', 's1', 'r', 'done'])
 
 class ContextualBandit(gym.Env):
     """A one-step bandit problem with clues."""
-    def __init__(self, n_feature, n_arm, payout_noise=1):
+    def __init__(self, n_feature, n_arm, payout_noise=0, weight_noise=0):
         self.n_feature = n_feature
         self.n_arm = n_arm
-        self.payout_noise = payout_noise
+        self.payout_noise = norm(payout_noise)
+        self.weight_noise = norm(weight_noise)
         self.w = np.random.normal(size=(self.n_feature, self.n_arm))
         self.action_space = spaces.Discrete(n_arm)
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=n_feature)
@@ -47,7 +48,8 @@ class ContextualBandit(gym.Env):
         return self._state
 
     def _step(self, action):
-        payout = self._state @ self.w + np.random.randn(self.n_arm) * self.payout_noise
+        w = self.w + self.weight_noise.rvs((self.n_feature, self.n_arm))
+        payout = self._state @ w + self.payout_noise.rvs()
         return self.final_state, payout[action], True, {}
 
 

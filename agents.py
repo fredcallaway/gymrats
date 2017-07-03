@@ -40,7 +40,7 @@ class Agent(ABC):
         elif hasattr(obj, 'predict'):
             self.value_functions.append(obj)
             obj.attach(self)
-        elif hasattr(obj, 'experiences'):
+        elif hasattr(obj, 'batch'):
             self.memory = obj
         else:
             raise ValueError('Cannot register {}'.format(obj))
@@ -222,29 +222,43 @@ class Memory(object):
     """Remembers past experiences."""
     # Memory = namedtuple('Memory', ['states', 'rewards', 'returns'])
     def __init__(self, size=100000):
-        self.experiences = deque(maxlen=size)
-        self.size = size
+        # self.experiences = deque(maxlen=size)
+        self.states = deque(maxlen=size)
+        self.actions = deque(maxlen=size)
+        self.rewards = deque(maxlen=size)
+        self.returns = deque(maxlen=size)
 
     def add(self, trace):
         # TODO this wastes RAM
-        self.experiences.extend(zip(trace['states'][:-1],
-                                    trace['actions'],
-                                    trace['rewards'],
-                                    np.flip(np.cumsum(np.flip(rewards, 0)), 0)))
+        self.states.extend(trace['states'])
+        self.actions.extend(trace['actions'])
+        self.actions.append(None)
+        self.rewards.extend(trace['rewards'])
+        self.rewards.append(0)
+        self.returns.extend(np.flip(np.cumsum(np.flip(trace['rewards'], 0)), 0))
+        self.returns.append(0)
+
+
+
+        # self.experiences.extend(zip(trace['states'][:-1],
+        #                             trace['actions'],
+        #                             # trace['states'][1:],
+        #                             trace['rewards'],
+        #                             np.flip(np.cumsum(np.flip(trace['rewards'], 0)), 0)))
         # self.deque.append({'states': states, 'rewards': rewards, 'returns': returns})
 
-    def episodes(self, size, n=1):
-        size = min(size, len(self.deque))
-        if not self.deque:
-            return
-        for _ in range(n):
-            yield np.random.choice(self.deque, size, replace=False)
+    # def episodes(self, size, n=1):
+    #     size = min(size, len(self.deque))
+    #     if not self.deque:
+    #         return
+    #     for _ in range(n):
+    #         yield np.random.choice(self.deque, size, replace=False)
 
     def batch(self, size):
-        size = min(size, len(self.experiences))
-        idx = np.random.choice(len(self.experiences), size=size, replace=False)
-
-        return (self.experiences[i] for i in idx)
+        size = min(size, len(self.states))
+        idx = np.random.choice(len(self.states), size=size, replace=False)
+        return idx
+        # return (self.experiences[i] for i in idx)
 
 
 # class Memory(object):

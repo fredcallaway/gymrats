@@ -8,6 +8,7 @@ np.set_printoptions(precision=3, linewidth=200)
 
 from tqdm import tqdm, trange, tnrange
 from copy import deepcopy
+from keras.utils import to_categorical
 
 from agents import Component
 
@@ -113,8 +114,8 @@ class BayesianRegressionV(StateValueFunction):
         super().attach(agent)
         self.model = BayesianRegression(np.zeros(self.state_size), sigma_w=10)
 
-    def predict(self, state, return_sigma=False):
-        return self.model.predict(return_sigma=return_sigma)
+    def predict(self, state, return_var=False):
+        return self.model.predict(state, return_var=return_var)
 
     # def finish_episode(self, trace):
     #     for batch in self.memory.batch(10):
@@ -125,7 +126,7 @@ class BayesianRegressionV(StateValueFunction):
     #     self.save('sigma_w', self.model.sigma_w.copy())
 
 
-from models import BayesianRegression
+from models import BayesQ, BayesianRegression
 class BayesianRegressionQ(StateValueFunction):
     """Learns a linear V function by SGD."""
     def __init__(self, **kwargs):
@@ -136,22 +137,48 @@ class BayesianRegressionQ(StateValueFunction):
         super().attach(agent)
         self.model = BayesianRegression(np.zeros((self.state_size, self.n_action)), sigma_w=10.)
 
-    def predict(self, state, return_sigma=False):
-        return self.model.predict(return_sigma=return_sigma)
+    def predict(self, state, return_var=False):
+        return self.model.predict(state, return_var=return_var)
 
     def finish_episode(self, trace):
-        exps = self.memory.batch(100)
-        states, returns, rewards = map(np.array, zip(*exps))
-        self.model.update(states, returns)
+        idx = self.memory.batch(1000)
+
+        states = []
+        actions = []
+        qs = []
+        targets = []
+        for i in idx:
+            if self.memory.actions[i] is None:
+                continue  # can't update for final state
+            states.append(self.memory.states[i])
+            actions.append(self.memory.actions[i])
+
+            if self.memory.actions[i+1] is None:
+                value = 0
+            else:
+                # value = self.model.predict(self.memory.states[i+1]).max()
+                value = self.memory.returns[i+1]
+            qs.append(self.memory.rewards[i] + value)
+            
+
+        actions = to_categorical(actions, num_classes=self.n_action)
+        self.model.update(np.stack(states), actions, np.array(qs))
+
+
+
+        # exps = self.memory.batch(1000)
+        # states, actions, next_states, returns, rewards = zip(*exps)
+        # target = self.model.predict(states)
+        
+
+
         # for ep in self.memory.episodes(10):
         #     print(batch)
         #     self.model.update(batch['states']
         #                       batch['returns'])
 
-        # self.save('w', self.model.w.copy())
-        # self.save('sigma_w', self.model.sigma_w.copy())
-
-
+        self.save('w', self.model.w.copy())
+        self.save('sigma_w', self.model.sigma_w.copy())
 
 
 class TDLambdaV(StateValueFunction):

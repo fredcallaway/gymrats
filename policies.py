@@ -61,9 +61,14 @@ class MaxQSamplePolicy(Policy):
         self.Q = Q
 
     def act(self, state):
-        q, sigma = self.Q.predict(state, return_sigma=True)
+        q, sigma = self.Q.predict(state, return_var=True)
         q_samples = stats.norm(q, sigma).rvs()
-        return np.argmax(q_samples)
+        q = q.flat
+        a = np.argmax(q_samples)
+        a1 = np.argmax(q)
+        self.save('max', a == a1)
+        self.save('regret', q[a1] - q[a])
+        return a
 
 
 from keras.layers import Dense
