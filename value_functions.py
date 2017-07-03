@@ -135,7 +135,7 @@ class BayesianRegressionQ(StateValueFunction):
 
     def attach(self, agent):
         super().attach(agent)
-        self.model = BayesianRegression(np.zeros((self.state_size, self.n_action)), sigma_w=10.)
+        self.model = BayesQ(np.zeros((self.state_size, self.n_action)), sigma_w=10.)
 
     def predict(self, state, return_var=False):
         return self.model.predict(state, return_var=return_var)
@@ -151,7 +151,9 @@ class BayesianRegressionQ(StateValueFunction):
                 continue  # can't update for final state
             states.append(self.memory.states[i])
             actions.append(self.memory.actions[i])
-            qs.append(self.memory.rewards[i] + self.model.predict([self.memory.states[i+1]]).max())
+            # value = self.model.predict([self.memory.states[i+1]]).max()
+            value = self.memory.returns[i+1]
+            qs.append(self.memory.rewards[i] + value)
             
 
         actions = to_categorical(actions, num_classes=self.n_action)

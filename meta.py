@@ -134,12 +134,12 @@ class MetaBestFirstSearchPolicy(Policy):
         else:
             v = self.model.predict(self.phi(node).reshape(1, -1))[0]
             noise = np.random.rand() * (.95 ** self.i_episode) if noisy else 0
-            return - (v + noise)
+            return (v + noise)
 
 
     def finish_episode(self, trace):
-        if not self.theta:
-            X = np.array([self.phi(s) for s in trace['actions'][:-1]])
+        if self.theta is None:
+            X = np.array([self.phi(node) for node in trace['actions'][:-1]])
             self.save('X', X)
             y = list(reversed(np.cumsum(list(reversed(trace['rewards'])))))
             y = np.array(y[:-1]).reshape(-1, 1)

@@ -33,14 +33,15 @@ def show_path(env, trace, render='human'):
 
 import heapq
 class PriorityQueue(list):
-    def __init__(self, key):
+    def __init__(self, key, max_first=True):
         self.key = key
+        self.inv = -1 if max_first else 1
 
     def pop(self):
         return heapq.heappop(self)[1]
         
     def push(self, item):
-        heapq.heappush(self, (self.key(item), item))
+        heapq.heappush(self, (self.inv * self.key(item), item))
 
 def softmax(x):
     ex = np.exp(x)

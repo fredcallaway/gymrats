@@ -9,7 +9,7 @@ from scipy import stats
 from tqdm import tqdm, trange, tnrange
 from copy import deepcopy
 
-from agents import Component
+from agents import Component, Model
 
 
 class Policy(Component):
@@ -68,6 +68,8 @@ class MaxQSamplePolicy(Policy):
         a1 = np.argmax(q)
         self.save('max', a == a1)
         self.save('regret', q[a1] - q[a])
+        if a == self.env.term_action:
+            self.save('final', state)
         return a
 
 

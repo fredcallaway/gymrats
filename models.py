@@ -17,11 +17,11 @@ class FunctionApproximator(object):
 
 
 def positive_variable(shape=(), init=0):
-    return tf.sqrt(tf.exp(tf.Variable(tf.zeros(shape))))
+    return tf.sqrt(tf.exp(variable(shape)))
 
 def variable(shape=(), init=0):
-    # return tf.Variable(tf.random_normal(shape))
-    return tf.Variable(tf.zeros(shape))
+    return tf.Variable(tf.random_normal(shape) * .01)
+    # return tf.Variable(tf.zeros(shape))
 
 def data(shape, dtype='float32'):
     return tf.placeholder(dtype, shape)
@@ -70,7 +70,7 @@ class BayesianRegression(FunctionApproximator):
 
 class BayesQ(FunctionApproximator):
     """Bayesian linear regression."""
-    def __init__(self, w_prior, sigma_w=100., n_iter=1000):
+    def __init__(self, w_prior, sigma_w=100., n_iter=100):
         super().__init__()
         w_prior = np.atleast_2d(w_prior)
         shape = w_prior.shape
