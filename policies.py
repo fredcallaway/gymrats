@@ -171,6 +171,7 @@ class ActorCritic(Policy):
 class Astar(Policy):
     """A* search finds the shortest path to a goal."""
     def __init__(self, heuristic):
+        assert 0  # this implementation is incorrect
         super().__init__()
         self.heuristic = heuristic
         self.plan = iter(())
@@ -192,7 +193,7 @@ class Astar(Policy):
         if not node.path:
             return np.inf  # the empty plan has infinite cost
         obs = self.env._observe(node.state)
-        value = 0 if node.done else self.heuristic(self.env, obs) * 1.001
+        value = 0 if node.done else self.heuristic(self.env, obs)
         boredom = - 0.1 * self.history[obs]
         score = node.reward + value + boredom
         return - score
@@ -240,7 +241,6 @@ class Astar(Policy):
             raise RuntimeError('No plan found.')
         else:
             plan = best_finished
-            print('best_finished = {}'.format(best_finished))
         # choices = concat([completed, map(get(1), take(100, frontier))])
         # plan = min(choices, key=eval_node(noisy=True))
         # self.log(

@@ -102,20 +102,16 @@ def heuristic(env, obs):
     return (abs(row - g_row) + abs(col - g_col))
 
 
+from models import BayesianRegression
+
 class MetaBestFirstSearchPolicy(Policy):
     """Chooses computations in a MetaBestFirstSearchEnv."""
     def __init__(self, theta=None):
         FEATURES = 2
         super().__init__()
         self.theta = theta
-        if not theta:
-            from keras.layers import Dense
-            from keras.models import Sequential
-            self.model = Sequential([
-                Dense(1, input_dim=FEATURES, activation='linear'),
-            ])
-            self.model.compile(optimizer='adam', loss='mse')
-
+        self.V = BayesianRegression(np.zeros(FEATURES))
+        self.history = defaultdict(list)
 
     def phi(self, node):
         # empty = not node.path
@@ -129,27 +125,44 @@ class MetaBestFirstSearchPolicy(Policy):
     def eval_node(self, node, noisy):
         if node is None:
             return np.inf
-        if self.theta:
+        elif self.theta:
             return self.theta @ self.phi(node)
         else:
-            v = self.model.predict(self.phi(node).reshape(1, -1))[0]
-            noise = np.random.rand() * (.95 ** self.i_episode) if noisy else 0
-            return (v + noise)
+            v, var = self.V.predict(self.phi(node), return_var=True)
+            if noisy:
+                return v + np.random.randn() * var
+            else:
+                return v
 
 
     def finish_episode(self, trace):
         if self.theta is None:
-            X = np.array([self.phi(node) for node in trace['actions'][:-1]])
-            self.save('X', X)
-            y = list(reversed(np.cumsum(list(reversed(trace['rewards'])))))
-            y = np.array(y[:-1]).reshape(-1, 1)
-            self.save('y', y)
-            h = self.model.fit(X, y, batch_size=len(X), epochs=1, verbose=0)
-            loss = h.history['loss']
-            from keras import backend as K
-            with K.get_session().as_default():
-                self.save('weights', self.model.weights[0].eval())
-            self.save('loss', loss)
+            self.save('w', self.V.w)
+            self.save('sigma_w', self.V.sigma_w)
+            X = [self.phi(node) for node in trace['actions'][:-1]]
+            y = list(reversed(np.cumsum(list(reversed(trace['rewards'])))))[:-1]
+
+            self.history['X'].extend(X)
+            self.history['y'].extend(y)
+
+            X = np.stack(self.history['X'])
+            y = np.array(self.history['y']).reshape(-1, 1)
+            self.V.update(X, y, 50)
+
+            # self.save('w', self.V.w)
+            # X = np.array([self.phi(node) for node in trace['actions'][:-1]])
+            # y = list(reversed(np.cumsum(list(reversed(trace['rewards'])))))
+            # y = np.array(y[:-1]).reshape(-1, 1)
+            # self.save('X', X)
+            # self.save('y', y)
+            # self.V.update(X, y)
+
+            # h = self.model.fit(X, y, batch_size=len(X), epochs=1, verbose=0)
+            # loss = h.history['loss']
+            # from keras import backend as K
+            # with K.get_session().as_default():
+            #     self.save('weights', self.model.weights[0].eval())
+            # self.save('loss', loss)
             
 
     def act(self, state):
@@ -162,6 +175,7 @@ class MetaBestFirstSearchPolicy(Policy):
         elif frontier:
             return frontier.pop()
         else:
+            print('NO FRONTIER')
             assert 0, 'no frontier'
 
 

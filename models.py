@@ -16,11 +16,13 @@ class FunctionApproximator(object):
         pass
 
 
-def positive_variable(shape=(), init=0):
-    return tf.sqrt(tf.exp(variable(shape)))
+def positive_variable(shape=(), **kwargs):
+    return tf.sqrt(tf.exp(variable(shape, **kwargs)))
 
-def variable(shape=(), init=0):
-    return tf.Variable(tf.random_normal(shape) * .01)
+def variable(shape=(), init=None, loc=0., scale=.01):
+    if init is None:
+        init = tf.random_normal(shape) * scale + loc
+    return tf.Variable(init)
     # return tf.Variable(tf.zeros(shape))
 
 def data(shape, dtype='float32'):
@@ -31,7 +33,9 @@ class BayesianRegression(FunctionApproximator):
     """Bayesian linear regression."""
     def __init__(self, w_prior, sigma_w=100.):
         super().__init__()
-        w_prior = np.atleast_2d(w_prior)
+        if len(w_prior.shape) < 2:
+            w_prior = w_prior.reshape(-1, 1)
+
         shape = w_prior.shape
 
         # Linear regression model.
@@ -44,7 +48,8 @@ class BayesianRegression(FunctionApproximator):
         self._y_obs = tf.placeholder(tf.float32, [None, shape[1]])
 
         # Varitional inference.
-        qw = self.qw = Normal(loc=variable(shape), scale=positive_variable(shape))
+        qw = self.qw = Normal(loc=variable(shape),
+                              scale=positive_variable(shape, loc=np.log(sigma_w**2).astype('float32')))
         self.inference = ed.KLqp({w: qw}, data={y: self._y_obs})
         self.inference.initialize(n_iter=100, n_samples=5)
         tf.global_variables_initializer().run()
@@ -61,6 +66,7 @@ class BayesianRegression(FunctionApproximator):
         self._sigma_w_T = self.sigma_w.T
 
     def predict(self, x, return_var=False):
+        x = np.atleast_2d(x)
         mean = x @ self.w
         if return_var:
             var = (x * self._sigma_w_T * x).sum(1)
