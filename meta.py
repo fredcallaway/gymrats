@@ -4,7 +4,7 @@ from utils import PriorityQueue
 from agents import Agent, Model
 import gym
 from gym import spaces
-from policies import Policy
+from policies import Policy, FixedPlanPolicy
 from toolz import memoize, curry
 import itertools as it
 
@@ -83,21 +83,6 @@ class MetaBestFirstSearchEnv(gym.Env):
         self._state = self.State(frontier, reward_to_state, best_done)
         return self._state
 
-
-class FixedPlanPolicy(Policy):
-    """A policy that blindly executes a fixed sequence of actions."""
-    Node = namedtuple('Node', ('state', 'path', 'reward', 'done'))
-    def __init__(self, plan, **kwargs):
-        super().__init__(**kwargs)
-        self._plan = plan
-
-    def start_episode(self, state):
-        super().start_episode(state)
-        self.plan = iter(self._plan)
-        # self.model = Model(self.env)
-
-    def act(self, state):
-        return next(self.plan)
 
 def heuristic(env, obs):
     row, col = obs
@@ -222,8 +207,8 @@ class MouselabEnv(gym.Env):
 
     def _step(self, action):
         if self._state is self.term_state:
-            print('BAD')
-            return None, 0, True, {}
+            assert 0, 'state is terminal'
+            # return None, 0, True, {}
         if action == self.term_action:
             # self._state = self.term_state
             reward = self.term_reward().sample()
@@ -256,8 +241,7 @@ class MouselabEnv(gym.Env):
     
     def action_features(self, action, state=None):
         state = state if state is not None else self._state
-        if state is None:
-            assert 0
+        assert state is not None
 
         if action == self.term_action:
             tr_mu, tr_sigma = norm.fit(self.term_reward.sample(10000))
@@ -269,7 +253,6 @@ class MouselabEnv(gym.Env):
 
     def term_reward(self, state=None):
         state = state if state is not None else self._state
-        # state = self._state
         assert state is not None
         return self.node_value(0, state)
 
@@ -291,24 +274,68 @@ class MouselabEnv(gym.Env):
         state = state if state is not None else self._state
         return self.node_value_to(node, state) + self.node_value(node, state)
 
-    def node_value_omniscient(self, node, state=None):
-        """A distribution of the value of a node given knowledge of all rewards."""
-        state = state if state is not None else self._state
-        children = self.tree[node]
-        if children:
-            return dmax(self.node_value_omniscient(c) + state[c] for c in children)
-        else:
-            return PointMass(0)
+    # def node_value_omniscient(self, node, state=None):
+    #     """A distribution of the value of a node given knowledge of all rewards."""
+    #     state = state if state is not None else self._state
+    #     children = self.tree[node]
+    #     if children:
+    #         return dmax(self.node_value_omniscient(c) + state[c] for c in children)
+    #     else:
+    #         return PointMass(0)
 
-    def node_quality_omniscient(self, node, state=None):
-        """A distribution of total expected rewards if this node is visited."""
-        state = state if state is not None else self._state
-        return self.node_value_to(node, state) + self.node_value_omniscient(node, state)
+    # def node_quality_omniscient(self, node, state=None):
+    #     """A distribution of total expected rewards if this node is visited."""
+    #     state = state if state is not None else self._state
+    #     return self.node_value_to(node, state) + self.node_value_omniscient(node, state)
 
-    def node_quality_observed(self, node, state=None):
-        """A distribution of total expected rewards if this node were observed."""
+    # def node_quality_observed(self, node, state=None):
+    #     """A distribution of total expected rewards if this node were observed."""
+    #     assert 0  # implementation is incorrect
+    #     state = state if state is not None else self._state
+    #     return self.node_value_to(node, state) + self.node_value_omniscient(node, state)
+
+    def vpi(self, state=None):
         state = state if state is not None else self._state
-        return self.node_value_to(node, state) + self.node_value_omniscient(node, state)
+        return (self.node_value_after_observe('all', 0, state).expectation() -
+                self.node_value(0, state).expectation())
+
+    def myopic_voc(self, action, state=None):
+        state = state if state is not None else self._state
+        return (self.node_value_after_observe([action], 0, state).expectation() -
+                self.node_value(0, state).expectation())
+
+    def node_value_after_observe(self, obs, node, state=None):
+        """A distribution over the expected value of node, after making an observation.
+        
+        obs can be a single node, a list of nodes, or 'all'
+        """
+        state = state if state is not None else self._state
+        def r(n):
+            if obs == 'all' or n in obs:
+                return state[n]
+            else:
+                return expectation(state[n])
+
+        return dmax((self.node_value_after_observe(obs, n1, state) + r(n1)
+                     for n1 in self.tree[node]),
+                    default=PointMass(0))
+
+    # def node_value_after_observe_(self, obs, node, state=None):
+    #     """A distribution over the expected value of node, after observing obs."""
+    #     state = state if state is not None else self._state
+
+    #     def r(n):
+    #         if n == obs:
+    #             return state[n]
+    #         else:
+    #             return expectation(state[n])
+
+    #     return dmax((self.node_value_after_observe(obs, n1, state) + r(n1)
+    #                  for n1 in self.tree[node]),
+    #                 default=PointMass(0))
+
+    def is_ancestor(self, ancestor, node):
+        assert 0
 
     def path_to(self, node, start=0):
         path = [start]
@@ -420,3 +447,33 @@ class MouselabEnv(gym.Env):
             for y in ys:
                 dot.edge(str(x), str(y))
         display(dot)
+
+
+class LightBulbEnv(MouselabEnv):
+    """Like Mouselab except observations are noisy."""
+    def __init__(self, branch=2, height=2, reward=None, cost=0, ground_truth=None):
+        self.branch = branch
+        if hasattr(self.branch, '__len__'):
+            self.height = len(self.branch)
+        else:
+            self.height = height
+            self.branch = [self.branch] * self.height
+
+        self.cost = - abs(cost)
+        self.reward = reward if reward is not None else Beta(1, 1)
+        self.ground_truth = tuple(reward.sample(len(self.tree)))
+        self.init = (reward,) * len(self.tree)
+
+        self.tree = self._build_tree()
+        self.term_action = len(self.tree)
+        self.reset()
+
+        self.action_space = spaces.Discrete(len(self.tree) + 1)
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape=len(self.tree))
+
+    def _observe(self, action):
+        result = self.ground_truth.sample()
+        s = list(self._state)
+        s[action] = s[action].observe(result)
+        return tuple(s)
+      

@@ -372,6 +372,22 @@ class GeneralizedAdvantageEstimation(Policy):
         self.critic.fit(state, value_target, epochs=1, verbose=0)
 
 
+class FixedPlanPolicy(Policy):
+    """A policy that blindly executes a fixed sequence of actions."""
+    Node = namedtuple('Node', ('state', 'path', 'reward', 'done'))
+    def __init__(self, plan, **kwargs):
+        super().__init__(**kwargs)
+        self._plan = plan
+
+    def start_episode(self, state):
+        super().start_episode(state)
+        self.plan = iter(self._plan)
+        # self.model = Model(self.env)
+
+    def act(self, state):
+        return next(self.plan)
+
+
 class ValSearchPolicy(Policy):
     """Searches for the maximum reward path using a model."""
     def __init__(self, V, replan=False, epsilon=0, noise=1, anneal=1, **kwargs):
@@ -470,3 +486,4 @@ class ValSearchPolicy(Policy):
         )
         # self._trace['paths'].append(plan.path)
         return plan.path
+
