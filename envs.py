@@ -158,8 +158,13 @@ class GridWorld(gym.Env):
         self.move_cost = - abs(move_cost)
         self.crash_cost = - abs(crash_cost)
         self.goal_reward = goal_reward
-        self.rewards = rewards
-        self.random_rewards = rewards is None
+
+        if rewards is None:
+            self.make_rewards = lambda: -np.random.random(self.shape)
+        elif callable(rewards):
+            self.make_rewards = rewards
+        else:
+            self.make_rewards = lambda: rewards
         
         self.goal = goal
         self.one_hot = False
@@ -184,7 +189,6 @@ class GridWorld(gym.Env):
         return [seed]
 
     def _reset(self):
-        self.done = False
         init_func = getattr(self, '_init_{}'.format(self.kind))
         init_func()
         return self._state
@@ -202,13 +206,13 @@ class GridWorld(gym.Env):
 
     def _init_pain(self):
         nr, nc = self.shape
-        self.goal = (nr-1, nc-1)
-        self._state = (0, 0)
+        self.goal = (nr-3, nc-3)
+        self._state = (2, 2)
         if self.random_spec:
             self.spec = np.zeros(self.shape)
             self.spec[self.goal] = self.GOAL
-        if self.random_rewards:
-            self.rewards = -np.random.random(self.shape)
+
+        self.rewards = self.make_rewards()
 
     def _observe(self, state=None):
         row, col = self._state if state is None else state
@@ -240,20 +244,20 @@ class GridWorld(gym.Env):
 
     def _step(self, a):
         reward = 0
-        if not self.done:
-            row, col = self._move(self.location(), a)
-            if self.spec[row, col] == self.WALL:
-                reward = self.crash_cost
-            elif self.spec[row, col] == self.GOAL:
-                reward = self.goal_reward
-                self.done = True
-            else:
-                self._state = (row, col)
-                if self.rewards is not None:
-                    reward += self.rewards[row, col]
-                reward += self.move_cost
-
-        return self._observe(self._state), reward, self.done, {}
+        done = False
+        row, col = self._move(self.location(), a)
+        if self.spec[row, col] == self.WALL:
+            reward = self.crash_cost
+        elif self.spec[row, col] == self.GOAL:
+            self._state = (row, col)
+            reward = self.goal_reward
+            done = True
+        else:
+            self._state = (row, col)
+            if self.rewards is not None:
+                reward += self.rewards[row, col]
+            reward += self.move_cost
+        return self._observe(self._state), reward, done, {}
 
     def _render(self, mode='human', close=False):
         if close:
@@ -261,9 +265,16 @@ class GridWorld(gym.Env):
         from matplotlib import colors
         from matplotlib import pyplot as plt
         row, col = self.location()
+
+        def text(row, col, txt, color='w', size=22):
+            plt.text(row, col, txt, color=color, size=size, 
+                     verticalalignment='center', horizontalalignment='center')
+
         
         if self.kind == 'pain':
             plt.imshow(self.rewards, aspect='equal', cmap='Reds_r')
+            text(row, col, 'A', color='b')
+            text(*self.goal, 'G', color='b')
             return
 
         spec = self.spec.copy()
@@ -276,6 +287,7 @@ class GridWorld(gym.Env):
         cmap = colors.ListedColormap(cdef)
         bounds = np.arange(cmap.N + 1)
         cnorm = colors.BoundaryNorm(bounds, cmap.N)
+
         # plt.text(2, 3, 'A', size=22, verticalalignment='center', horizontalalignment='center', color='w')
         plt.imshow(spec, aspect='equal', cmap=cmap, norm=cnorm)
       

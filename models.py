@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
-import edward as ed
 import numpy as np
-import tensorflow as tf
-from edward.models import Normal
+
+
+# import edward as ed
+# import tensorflow as tf
+# from edward.models import Normal
 
 class FunctionApproximator(object):
     """Approximates functions."""
@@ -29,50 +31,82 @@ def data(shape, dtype='float32'):
     return tf.placeholder(dtype, shape)
 
 
-class BayesianRegression(FunctionApproximator):
+# X = np.vstack([x, np.ones(len(x))]).T
+
+from bayespy.nodes import GaussianARD, SumMultiply, Gamma
+from bayespy.inference import VB
+
+class BayesianRegression(object):
     """Bayesian linear regression."""
-    def __init__(self, w_prior, sigma_w=100.):
+    def __init__(self, n_feature, n_iter=1000, tolerance=1e-8):
         super().__init__()
-        if len(w_prior.shape) < 2:
-            w_prior = w_prior.reshape(-1, 1)
-
-        shape = w_prior.shape
-
-        # Linear regression model.
-        self._X = data((None, shape[0]))
-        w = Normal(loc=tf.zeros(shape), scale=sigma_w)
-        # Observation noise is optimized as a point estimate
-        # so it doesn't have an associated distribution.
-        self._sigma_y = positive_variable()
-        y = Normal(loc=tf.matmul(self._X, w), scale=self._sigma_y)
-        self._y_obs = tf.placeholder(tf.float32, [None, shape[1]])
-
-        # Varitional inference.
-        qw = self.qw = Normal(loc=variable(shape),
-                              scale=positive_variable(shape, loc=np.log(sigma_w**2).astype('float32')))
-        self.inference = ed.KLqp({w: qw}, data={y: self._y_obs})
-        self.inference.initialize(n_iter=100, n_samples=5)
-        tf.global_variables_initializer().run()
-        self.w = self.qw.loc.eval()
-        self.sigma_w = self.qw.scale.eval()
-        self._sigma_w_T = self.sigma_w.T
+        self.n_iter = n_iter
+        self.tolerance = tolerance
+        self.weights = GaussianARD(0, 1e-6, shape=(n_feature,))
     
-    def update(self, X, y, n_iter=1):
-        for _ in range(n_iter):
-            info_dict = self.inference.update({self._X: X, self._y_obs: y})
-            # self.inference.print_progress(info_dict)
-        self.w = self.qw.loc.eval()
-        self.sigma_w = self.qw.scale.eval()
-        self._sigma_w_T = self.sigma_w.T
+    def fit(self, X, y):
+        self.weights = GaussianARD(0, 1e-6, shape=(X.shape[-1],))
+        y_mean = SumMultiply('i,i', self.weights, X)
+        precision = Gamma(1, .1)
+        y_obs = GaussianARD(y_mean, precision)
+        y_obs.observe(y)
+
+        Q = VB(y_obs, self.weights, precision)
+        Q.update(repeat=self.n_iter, tol=self.tolerance, verbose=False)
 
     def predict(self, x, return_var=False):
-        x = np.atleast_2d(x)
-        mean = x @ self.w
+        y = SumMultiply('i,i', self.weights, x)
+        y_hat, var = y.get_moments()
         if return_var:
-            var = (x * self._sigma_w_T * x).sum(1)
-            return mean, var
+            return y_hat, var
         else:
-            return mean
+            return y_hat
+
+
+# class BayesianRegression(FunctionApproximator):
+#     """Bayesian linear regression."""
+#     def __init__(self, w_prior, sigma_w=100., n_iter=1000):
+#         super().__init__()
+#         if len(w_prior.shape) < 2:
+#             w_prior = w_prior.reshape(-1, 1)
+
+#         shape = w_prior.shape
+
+#         # Linear regression model.
+#         self._X = data((None, shape[0]))
+#         w = Normal(loc=tf.zeros(shape), scale=sigma_w)
+#         # Observation noise is optimized as a point estimate
+#         # so it doesn't have an associated distribution.
+#         self._sigma_y = positive_variable()
+#         y = Normal(loc=tf.matmul(self._X, w), scale=self._sigma_y)
+#         self._y_obs = tf.placeholder(tf.float32, [None, shape[1]])
+
+#         # Varitional inference.
+#         qw = self.qw = Normal(loc=variable(shape),
+#                               scale=positive_variable(shape, loc=np.log(sigma_w**2).astype('float32')))
+#         self.inference = ed.KLpq({w: qw}, data={y: self._y_obs})
+#         self.inference.initialize(n_iter=n_iter, n_samples=10)
+#         tf.global_variables_initializer().run()
+#         self.w = self.qw.loc.eval()
+#         self.sigma_w = self.qw.scale.eval()
+#         self._sigma_w_T = self.sigma_w.T
+    
+#     def update(self, X, y, n_iter=1):
+#         for _ in range(n_iter):
+#             info_dict = self.inference.update({self._X: X, self._y_obs: y})
+#             # self.inference.print_progress(info_dict)
+#         self.w = self.qw.loc.eval()
+#         self.sigma_w = self.qw.scale.eval()
+#         self._sigma_w_T = self.sigma_w.T
+
+#     def predict(self, x, return_var=False):
+#         x = np.atleast_2d(x)
+#         mean = x @ self.w
+#         if return_var:
+#             var = (x * self._sigma_w_T * x).sum(1)
+#             return mean, var
+#         else:
+#             return mean
 
 class BayesQ(FunctionApproximator):
     """Bayesian linear regression."""

@@ -8,7 +8,7 @@ np.set_printoptions(precision=3, linewidth=200)
 
 from tqdm import tqdm, trange, tnrange
 from copy import deepcopy
-from keras.utils import to_categorical
+# from keras.utils import to_categorical
 
 from agents import Component
 
@@ -36,19 +36,22 @@ class ActionValueFunction(ValueFunction):
     """Values of state action pairs."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.model = None
 
-    def experience(self, s0, a, s1, r, done):
-        x0, x1 = self.features(s0), self.features(s1)
-        target = self.model.predict(x1)
-        target[a] = r + self.discount * np.max(self.model.predict(x1))
-        self.model.update(x0, target)
-
+    @abstractmethod
     def predict(self, s):
         x = self.features(s)
         return self.model.predict(x)
 
-      
+
+
+class MyQ(ActionValueFunction):
+    def __init__(self):
+        super().__init__()
+
+    def predict(self, s):
+        return 
+
+
 
 
 
@@ -73,7 +76,7 @@ class NeuralQ(ActionValueFunction):
         return actor
       
 
-class LinearQ(ValueFunction):
+class LinearQ(ActionValueFunction):
     """Learns a linear Q function by SGD."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -95,6 +98,29 @@ class LinearQ(ValueFunction):
     def predict(self, s):
         x = self.features(s)
         return self.model.predict(x)
+
+# class LinearQ(ActionValueFunction):
+#     """Learns a linear Q function by SGD."""
+#     def __init__(self, **kwargs):
+#         super().__init__(**kwargs)
+#         self.model = None
+
+#     def attach(self, agent):
+#         super().attach(agent)
+#         sx = len(self.features(self.env.reset()))
+#         sy = self.agent.n_actions
+#         shape = (sx, sy)
+#         self.model = LinearSGD(shape, learn_rate=self.learn_rate)
+    
+#     def experience(self, s0, a, s1, r, done):
+#         x0, x1 = self.features(s0), self.features(s1)
+#         target = self.model.predict(x1)
+#         target[a] = r + self.discount * np.max(self.model.predict(x1))
+#         self.model.update(x0, target)
+
+#     def predict(self, s):
+#         x = self.features(s)
+#         return self.model.predict(x)
 
 
 class StateValueFunction(ValueFunction):
@@ -126,19 +152,21 @@ class BayesianRegressionV(StateValueFunction):
     #     self.save('sigma_w', self.model.sigma_w.copy())
 
 
-from models import BayesQ, BayesianRegression
+# from models import BayesQ, BayesianRegression
 class BayesianRegressionQ(StateValueFunction):
-    """Learns a linear V function by SGD."""
+    """Learns a linear Q function by Bayesian regression."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.model = None
 
     def attach(self, agent):
         super().attach(agent)
-        self.model = BayesQ(np.zeros((self.state_size, self.n_action)), sigma_w=10.)
+        # self.model = BayesQ(np.zeros((self.state_size, self.n_action)), sigma_w=10.)
+
 
     def predict(self, state, return_var=False):
-        return self.model.predict(state, return_var=return_var)
+        return 
+        # return self.model.predict(state, return_var=return_var)
 
     def finish_episode(self, trace):
         idx = self.memory.batch(1000)
@@ -155,9 +183,8 @@ class BayesianRegressionQ(StateValueFunction):
             value = self.memory.returns[i+1]
             qs.append(self.memory.rewards[i] + value)
             
-
-        actions = to_categorical(actions, num_classes=self.n_action)
-        self.model.update(np.stack(states), actions, np.array(qs), 1)
+        # actions = to_categorical(actions, num_classes=self.n_action)
+        # self.model.update(np.stack(states), actions, np.array(qs), 1)
 
 
 

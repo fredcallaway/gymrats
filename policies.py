@@ -73,9 +73,7 @@ class MaxQSamplePolicy(Policy):
         return a
 
 
-from keras.layers import Dense
-from keras.models import Sequential
-from keras.optimizers import Adam, Nadam
+
 
 class ActorCritic(Policy):
     """docstring for ActorCritic"""
@@ -98,6 +96,9 @@ class ActorCritic(Policy):
         self.actor = self.build_actor()
 
     def build_actor(self):
+        from keras.layers import Dense
+        from keras.models import Sequential
+        from keras.optimizers import Adam, Nadam
         actor = Sequential([
             Dense(24, input_dim=self.state_size, activation='relu',
                   kernel_initializer='he_uniform'),
@@ -269,7 +270,7 @@ class GeneralizedAdvantageEstimation(Policy):
         self._critic_discount = np.array([(self.discount * self.critic_lambda) ** i 
                                           for i in range(5000)])
 
-        self.memory = deque(maxlen=100)
+        self._memory = deque(maxlen=100)
         self.batch_size = 20
 
     def attach(self, agent):
@@ -278,9 +279,12 @@ class GeneralizedAdvantageEstimation(Policy):
         self.critic = self.build_critic()
 
     def build_actor(self):
+        from keras.layers import Dense
+        from keras.models import Sequential
+        from keras.optimizers import Nadam
         actor = Sequential([
-            Dense(24, input_dim=self.state_size, activation='relu',
-                  kernel_initializer='he_uniform'),
+            # Dense(24, input_dim=self.state_size, activation='relu',
+            #       kernel_initializer='he_uniform'),
             # Dense(24, activation='relu',
             #       kernel_initializer='he_uniform'),
             Dense(self.n_action, input_dim=self.state_size, activation='softmax',
@@ -293,9 +297,12 @@ class GeneralizedAdvantageEstimation(Policy):
 
     # critic: state is input and value of state is output of model
     def build_critic(self):
+        from keras.layers import Dense
+        from keras.models import Sequential
+        from keras.optimizers import Nadam
         critic = Sequential([
-            Dense(24, input_dim=self.state_size, activation='relu',
-                  kernel_initializer='he_uniform'),
+            # Dense(24, input_dim=self.state_size, activation='relu',
+            #       kernel_initializer='he_uniform'),
             # Dense(24, activation='relu',
             #       kernel_initializer='he_uniform'),
             Dense(1, input_dim=self.state_size, activation='linear',
@@ -311,8 +318,8 @@ class GeneralizedAdvantageEstimation(Policy):
 
     # update networks every episode
     def finish_episode(self, trace):
-        if len(self.memory) >= self.batch_size:
-            batch = np.random.choice(self.memory, self.batch_size)
+        if len(self._memory) >= self.batch_size:
+            batch = np.random.choice(self._memory, self.batch_size)
             batch.append(trace)
             self.train_batch(batch)
         else:

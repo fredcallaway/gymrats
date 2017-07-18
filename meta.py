@@ -3,9 +3,12 @@ import numpy as np
 from utils import PriorityQueue
 from agents import Agent, Model
 import gym
+from gym import spaces
 from policies import Policy
 from toolz import memoize, curry
 import itertools as it
+
+from distributions import *
 # from envs import 
 
 class MetaBestFirstSearchEnv(gym.Env):
@@ -68,12 +71,11 @@ class MetaBestFirstSearchEnv(gym.Env):
 
         for a, s1, r, done in self.model.options(s0):
             node1 = self.Node(s1, p0 + [a], r0 + r, done)
-            if node1.reward <= reward_to_state[s1]:
+            if node1.reward <= reward_to_state[s1] -0.002:
                 continue  # cannot be better than an existing node
             reward_to_state[s1] = node1.reward
             if done:
-                # return node1  # ASSUMPTION: only one path to goal
-                best_done = min((best_done, node1), key=self.eval_node(noisy=False))
+                best_done = max((best_done, node1), key=self.eval_node(noisy=False))
             else:
                 frontier.push(node1)
 
@@ -106,30 +108,32 @@ from models import BayesianRegression
 
 class MetaBestFirstSearchPolicy(Policy):
     """Chooses computations in a MetaBestFirstSearchEnv."""
-    def __init__(self, theta=None):
+    def __init__(self, theta=None, n_iter=1):
         FEATURES = 2
         super().__init__()
         self.theta = theta
-        self.V = BayesianRegression(np.zeros(FEATURES))
-        self.history = defaultdict(list)
+        if theta is None:
+            self.n_iter = n_iter
+            self.memory_length = 1000
+            self.V = BayesianRegression(FEATURES)
+            self.history = defaultdict(lambda: deque(maxlen=self.memory_length))
 
     def phi(self, node):
         # empty = not node.path
-        obs = node.state
         reward_so_far = node.reward
-        distance = heuristic(self.env.env, obs)
+        distance = heuristic(self.env.env, node.state)
         x = np.r_[reward_so_far, distance]
         return x
 
     @curry
     def eval_node(self, node, noisy):
         if node is None:
-            return np.inf
+            return -np.inf
         elif self.theta:
             return self.theta @ self.phi(node)
         else:
             v, var = self.V.predict(self.phi(node), return_var=True)
-            if noisy:
+            if noisy and self.i_episode <= 0:
                 return v + np.random.randn() * var
             else:
                 return v
@@ -137,8 +141,9 @@ class MetaBestFirstSearchPolicy(Policy):
 
     def finish_episode(self, trace):
         if self.theta is None:
-            self.save('w', self.V.w)
-            self.save('sigma_w', self.V.sigma_w)
+            w, var = self.V.weights.get_moments()
+            self.save('weights', w)
+            self.save('weights_var', var)
             X = [self.phi(node) for node in trace['actions'][:-1]]
             y = list(reversed(np.cumsum(list(reversed(trace['rewards'])))))[:-1]
 
@@ -146,8 +151,8 @@ class MetaBestFirstSearchPolicy(Policy):
             self.history['y'].extend(y)
 
             X = np.stack(self.history['X'])
-            y = np.array(self.history['y']).reshape(-1, 1)
-            self.V.update(X, y, 50)
+            y = np.array(self.history['y'])#.reshape(-1, 1)
+            self.V.fit(X, y)
 
             # self.save('w', self.V.w)
             # X = np.array([self.phi(node) for node in trace['actions'][:-1]])
@@ -168,11 +173,17 @@ class MetaBestFirstSearchPolicy(Policy):
     def act(self, state):
         frontier, reward_to_state, best_done = state
         # print('frontier', frontier)
-        self.save('frontier', [n[1].state for n in frontier])
+        # self.save('frontier', [n[1].state for n in frontier])
+        self.ep_trace['frontier'].append([n[1].state for n in frontier])
 
         if best_done:
-            return 'TERM'
-        elif frontier:
+            value = self.eval_node(best_done, noisy=False)
+            best = all(value > self.eval_node(n, noisy=False) 
+                       for v, n in frontier)
+            if best:
+                return 'TERM'
+
+        if frontier:
             return frontier.pop()
         else:
             print('NO FRONTIER')
@@ -184,98 +195,200 @@ class MouselabEnv(gym.Env):
     """MetaMDP for a tree with a discrete unobserved reward function."""
     metadata = {'render.modes': ['human', 'array']}
     term_state = None
-    def __init__(self, branch=2, height=2, reward=None, cost=0):
+    def __init__(self, branch=2, height=2, reward=None, cost=0, ground_truth=None):
         self.branch = branch
-        self.height = height
+        if hasattr(self.branch, '__len__'):
+            self.height = len(self.branch)
+        else:
+            self.height = height
+            self.branch = [self.branch] * self.height
+
         self.cost = - abs(cost)
         self.reward = reward if reward is not None else Normal(1, 1)
-        self.expected_reward = expectation(self.reward)
+        self.ground_truth = ground_truth
 
         self.tree = self._build_tree()
-        self.init = (self.reward,) * len(self.tree)
+        self.init = (0,) + (self.reward,) * (len(self.tree) - 1)
         self.term_action = len(self.tree)
         self.reset()
 
-        self.action_space = gym.spaces.Discrete(len(self.tree) + 1)
-        self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=len(self.tree))
+        self.action_space = spaces.Discrete(len(self.tree) + 1)
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape=len(self.tree))
 
     def _reset(self):
         self._state = self.init
-        return self._observe(self._state)
+        return self.features(self._state)
 
     def _step(self, action):
         if self._state is self.term_state:
             print('BAD')
             return None, 0, True, {}
-        assert self._state is not None, '2'
         if action == self.term_action:
+            # self._state = self.term_state
             reward = self.term_reward().sample()
-            self._state = self.term_state
             done = True
         elif self._state[action] is not self.reward:  # already observed
-            reward = self.cost
-            # reward = -1
+            reward = 0
             done = False
         else:  # observe a new node
-            s = list(self._state)
-            s[action] = s[action].sample()
-            self._state = tuple(s)
+            self._state = self._observe(action)
             reward = self.cost
             done = False
-        return self._observe(self._state), reward, done, {}
+        return self.features(self._state), reward, done, {}
 
-    def _observe(self, state=None):
+    def _observe(self, action):
+        if self.ground_truth is not None:
+            result = self.ground_truth[action]
+        else:
+            result = self._state[action].sample()
+        s = list(self._state)
+        s[action] = result
+        return tuple(s)
+
+    def features(self, state=None):
+        state = state if state is not None else self._state
         if state is None:
             return np.full(len(self.tree), np.nan)
-        state = state if state is not None else self._state
         # Is each node observed?
-        return np.array([1. if not hasattr(x, 'sample') else 0.
+        return np.array([1. if hasattr(x, 'sample') else 0.
                          for x in state])
+    
+    def action_features(self, action, state=None):
+        state = state if state is not None else self._state
+        if state is None:
+            assert 0
+
+        if action == self.term_action:
+            tr_mu, tr_sigma = norm.fit(self.term_reward.sample(10000))
+            return np.r_[0, 0, 0, 0, 0, tr_mu, tr_sigma]
+
+        nq_mu, nq_sigma = norm.fit(self.node_quality(action).sample(10000))
+        nqpi_mu, nqpi_sigma = norm.fit(self.node_quality(action).sample(10000))
+        return np.r_[1, nq_mu, nq_sigma, nqpi_mu, nqpi_sigma, 0, 0]
 
     def term_reward(self, state=None):
         state = state if state is not None else self._state
         # state = self._state
         assert state is not None
-        return self.tree_V(0, state)
-
-    def encode(self, state):
-        pass
+        return self.node_value(0, state)
 
     def observe(self, node, state=None):
         state = state if state is not None else self._state
         s = list(state)
         s[node]
 
-    def tree_V(self, s=0, state=None):
+    def node_value(self, node, state=None):
+        """A distribution over total rewards after the given node."""
         state = state if state is not None else self._state
-        # includes the reward attained at state s (it's not really a value function)
-        r = state[s]
-        future_reward = max((self.tree_V(s1, state) for s1 in self.tree[s]), 
-                            default=Discrete((0,)), key=expectation)
-        return future_reward + r
+        return max((self.node_value(n1, state) + state[n1]
+                    for n1 in self.tree[node]), 
+                   default=PointMass(0), key=expectation)
+
+    def node_value_to(self, node, state=None):
+        """A distribution over rewards up to and including the given node."""
+        state = state if state is not None else self._state
+        start_value = PointMass(0)
+        return sum((state[n] for n in self.path_to(node)), start_value)
+
+    def node_quality(self, node, state=None):
+        """A distribution of total expected rewards if this node is visited."""
+        state = state if state is not None else self._state
+        return self.node_value_to(node, state) + self.node_value(node, state)
+
+    def node_value_omniscient(self, node, state=None):
+        """A distribution of the value of a node given knowledge of all rewards."""
+        state = state if state is not None else self._state
+        children = self.tree[node]
+        if children:
+            return dmax(self.node_value_omniscient(c) + state[c] for c in children)
+        else:
+            return PointMass(0)
+
+    def node_quality_omniscient(self, node, state=None):
+        """A distribution of total expected rewards if this node is visited."""
+        state = state if state is not None else self._state
+        return self.node_value_to(node, state) + self.node_value_omniscient(node, state)
+
+    def node_quality_observed(self, node, state=None):
+        """A distribution of total expected rewards if this node were observed."""
+        state = state if state is not None else self._state
+        return self.node_value_to(node, state) + self.node_value_omniscient(node, state)
+
+    def path_to(self, node, start=0):
+        path = [start]
+        if node == start:
+            return path
+        for _ in range(self.height + 1):
+            children = self.tree[path[-1]]
+            for i, child in enumerate(children):
+                if child == node:
+                    path.append(node)
+                    return path
+                if child > node:
+                    path.append(children[i-1])
+                    break
+            else:
+                path.append(child)
+        assert False
+
+    def all_paths(self, start=0):
+        def rec(path):
+            children = self.tree[path[-1]]
+            if children:
+                for child in children:
+                    yield from rec(path + [child])
+            else:
+                yield path
+
+        return rec([start])
 
     def subtree(self, state, n):
         """Returns the substree of the belief state with root n."""
+        assert 0
         if not self.tree[n]:  # leaf node
             return state[n]
         c1, c2 = self.tree[n]
         return tuple(state[i] for i in range(n, 2 * c2 - c1))
 
     def _build_tree(self):
-        """Constructs the transition object-level MDP."""
-        num_node = self.branch ** (self.height+1) - 1
-        T = [[] for _ in range(num_node)]  # T[i] = [c1, c2] or [] if i is terminal
+        # num_node = np.cumsum(self.branch).sum() + 1
+        def nodes_per_layer():
+            n = 1
+            yield n
+            for b in self.branch:
+                n *= b
+                yield n
+
+        num_node = sum(nodes_per_layer())
+        T = [[] for _ in range(num_node)]  # T[i] = [c1, c2, ...] or [] if i is terminal
+
         ids = it.count(0)
         def expand(i, d):
             if d == self.height:
                 return
-            for _ in range(self.branch):
+            for _ in range(self.branch[d]):
                 next_i = next(ids)
                 T[i].append(next_i)
                 expand(next_i, d+1)
 
         expand(next(ids), 0)
         return T
+
+    # def _build_tree(self):
+    #     """Constructs the transition object-level MDP."""
+    #     num_node = self.branch ** (self.height+1) - 1
+    #     T = [[] for _ in range(num_node)]  # T[i] = [c1, c2] or [] if i is terminal
+    #     ids = it.count(0)
+    #     def expand(i, d):
+    #         if d == self.height:
+    #             return
+    #         for _ in range(self.branch):
+    #             next_i = next(ids)
+    #             T[i].append(next_i)
+    #             expand(next_i, d+1)
+
+    #     expand(next(ids), 0)
+    #     return T
 
     def _render(self, mode='notebook', close=False):
         from graphviz import Digraph
@@ -293,8 +406,12 @@ class MouselabEnv(gym.Env):
         colormap.set_array(np.array([vmin, vmax]))
 
         def color(val):
+            if val > 0:
+                return '#8EBF87'
+            else:
+                return '#F7BDC4'
             # return '#9999ee'
-            return rgb2hex(colormap.to_rgba(val))
+            # return rgb2hex(colormap.to_rgba(val))
         
         # COLOR = {None: 'grey', np.inf: 'grey', 1: '#dd4444', 0: '#5555ee'}
         dot = Digraph()
@@ -302,90 +419,8 @@ class MouselabEnv(gym.Env):
             r = self._state[x]
             observed = not hasattr(self._state[x], 'sample')
             c = color(r) if observed else 'grey'
-            l = str(r) if observed else '?'
+            l = str(round(r, 2)) if observed else '?'
             dot.node(str(x), label=l, style='filled', color=c)
             for y in ys:
                 dot.edge(str(x), str(y))
         display(dot)
-
-
-def expectation(val):
-    if hasattr(val, 'expectation'):
-        return val.expectation()
-    else:
-        return val
-
-def sample(val):
-    if hasattr(val, 'sample'):
-        return val.sample()
-    else:
-        return val
-
-def cross(d1, d2, f):
-    outcomes = Counter()
-    for ((o1, p1), (o2, p2)) in it.product(d1, d2):
-        outcomes[f(o1, o2)] += p1 * p2
-
-    return Discrete(outcomes.keys(), outcomes.values())
-
-
-class Normal(object):
-    """Normal distribution."""
-    def __init__(self, mu, sigma):
-        super().__init__()
-        self.mu = mu
-        self.sigma = sigma
-
-    def __repr__(self):
-        return 'Norm'
-
-    def __add__(self, other):
-        if isinstance(other, Normal):
-            return Normal(self.mu + other.mu, self.sigma + other.sigma)
-        else:
-            return Normal(self.mu + other, self.sigma)
-
-    def expectation(self):
-        return self.mu
-
-    def sample(self):
-        return self.mu + self.sigma * np.random.randn()
-
-
-class Discrete(object):
-    """Discrete distribution."""
-    def __init__(self, vs, ps=None):
-        super().__init__()
-        self.vs = tuple(vs)
-        if ps is None:
-            self.ps = tuple(1/len(vs) for _ in range(len(vs)))
-        else:
-            self.ps = tuple(ps)
-
-    def __repr__(self):
-        return 'Cat'
-
-    def __iter__(self):
-        return zip(self.vs, self.ps)
-
-    def __len__(self):
-        return len(self.ps)
-
-    def __add__(self, other):
-        if isinstance(other, Discrete):
-            return cross(self, other, lambda s, o: s + o)
-        else:
-            return self.apply(lambda v: v + other)
-
-    def apply(self, f):
-        vs = tuple(f(v) for v in self.vs)
-        return Discrete(vs, self.ps)
-
-    def expectation(self):
-        return sum(p * v for p, v in zip(self.ps, self.vs))
-
-    def sample(self):
-        return np.random.choice(self.vs, p=self.ps)
-      
-      
-
