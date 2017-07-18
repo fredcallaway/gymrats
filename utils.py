@@ -4,6 +4,12 @@ import itertools as it
 def join(*args, sep=' '):
     return sep.join(map(str, args))
 
+def log_return(func):
+    def wrapped(*args, **kwargs):
+        r = func(*args, **kwargs)
+        print('{} returns {}'.format(func.__name__, r))
+        return r
+    return wrapped
 
 def logged(condition=lambda r: True):
     def decorator(func):

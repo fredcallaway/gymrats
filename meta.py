@@ -8,6 +8,7 @@ from policies import Policy
 from toolz import memoize, curry
 import itertools as it
 
+from utils import log_return
 from distributions import *
 # from envs import 
 
@@ -271,11 +272,6 @@ class MouselabEnv(gym.Env):
         # state = self._state
         assert state is not None
         return self.node_value(0, state)
-
-    def observe(self, node, state=None):
-        state = state if state is not None else self._state
-        s = list(state)
-        s[node]
 
     def node_value(self, node, state=None):
         """A distribution over total rewards after the given node."""
