@@ -90,7 +90,7 @@ def heuristic(env, obs):
     return (abs(row - g_row) + abs(col - g_col))
 
 
-from models import BayesianRegression
+# from models import BayesianRegression
 
 class MetaBestFirstSearchPolicy(Policy):
     """Chooses computations in a MetaBestFirstSearchEnv."""
@@ -223,7 +223,7 @@ class MouselabEnv(gym.Env):
             # self._state = self.term_state
             reward = self.term_reward().sample()
             done = True
-        elif self._state[action] is not self.reward:  # already observed
+        elif self.node_reward(self._state, action) is not self.reward:  # already observed
             reward = 0
             done = False
         else:  # observe a new node
@@ -232,14 +232,22 @@ class MouselabEnv(gym.Env):
             done = False
         return self.features(self._state), reward, done, {}
 
-    def _observe(self, action):
-        if self.ground_truth is not None:
-            result = self.ground_truth[action]
-        else:
-            result = self._state[action].sample()
-        s = list(self._state)
-        s[action] = result
-        return tuple(s)
+    def _observe(self, node):
+        actions = iter(self.node_address(node))
+        def update(tree):
+            r, children = tree
+            try:
+                a = next(actions)
+                new_children = (*children[:a], update(children[a]), *children[a+1:])
+                return (r, new_children)
+            except StopIteration:
+                if self.ground_truth is not None:
+                    r_obs = self.ground_truth[node]
+                else:
+                    r_obs = tree[0].sample()
+                return (r_obs, children)
+
+        return update(self._state)
 
     def actions(self, state):
         """Yields actions that can be taken in the given state.
@@ -248,9 +256,9 @@ class MouselabEnv(gym.Env):
         """
         if state is self.term_state:
             return
-        for i, v in enumerate(state):
-            if v is self.reward:
-                yield i
+        for n in range(len(self.tree)):
+            if hasattr(self.node_reward(state, n), 'sample'):
+                yield n
         yield self.term_action
 
     def results(self, state, action):
@@ -259,15 +267,27 @@ class MouselabEnv(gym.Env):
         Each outcome is (probability, next_state, reward).
         """
         if action == self.term_action:
-            # R = self.term_reward()
-            # S1 = Categorical([self.term_state])
-            # return cross(S1, R)
             yield (1, self.term_state, self.expected_term_reward())
         else:
-            for r, p in state[action]:
-                s1 = list(state)
-                s1[action] = r
-                yield (p, tuple(s1), self.cost)
+            steps = iter(self.node_address(action))
+            def update(tree):
+                r, children = tree
+                try:
+                    a = next(steps)
+                except StopIteration:
+                    # if not hasattr(tree[0], 'sample'):
+                    #     print('bad')
+                    #     return
+                    for r, p in tree[0]:
+                        yield ((r, children), p)
+                else:
+                    for new, p in update(children[a]):
+                        new_children = (*children[:a], new, *children[a+1:])
+                        yield ((r, new_children), p)
+
+            for s1, p in update(state):
+                yield (p, s1, self.cost)
+
 
     def features(self, state=None):
         state = state if state is not None else self._state
@@ -301,8 +321,12 @@ class MouselabEnv(gym.Env):
     def node_value(self, node, state=None):
         """A distribution over total rewards after the given node."""
         state = state if state is not None else self._state
-        return max((self.node_value(n1, state) + state[n1]
-                    for n1 in self.tree[node]), 
+        return self.subtree_value(self.subtree(node, state))
+
+    def subtree_value(self, tree):
+        """A distribution over total rewards after the given node."""
+        r, children = tree
+        return max((self.subtree_value(t1) + r for t1 in children),
                    default=PointMass(0), key=expectation)
 
     def node_value_to(self, node, state=None):
@@ -359,6 +383,35 @@ class MouselabEnv(gym.Env):
                 path.append(child)
         assert False
 
+    def subtree(self, node, tree):
+        for a in self.node_address(node):
+            tree = tree[1][a]
+        return tree
+
+    @memoize
+    def node_address(self, node):
+        """The series of actions that lead to the given node."""
+        actions = []
+        if node == 0:
+            return actions
+        n = 0
+        for _ in range(self.height + 1):
+            children = self.tree[n]
+            for i, n in enumerate(children):
+                if n == node:
+                    actions.append(i)
+                    return actions
+                if n > node:
+                    actions.append(i - 1)
+                    n = children[i-1]
+                    break  # take the branch before this one
+            else:
+                actions.append(i)
+        assert False
+
+    def node_reward(self, state, node):
+        return self.subtree(node, state)[0]
+
     def all_paths(self, start=0):
         def rec(path):
             children = self.tree[path[-1]]
@@ -397,7 +450,7 @@ class MouselabEnv(gym.Env):
     def _build_state(self):
         def tree(branches):
             if not branches:
-                return (self.reward, [])
+                return (self.reward, ())
             children = tuple(tree(branches[1:]) for _ in range(branches[0]))
             return (self.reward, children)
 
@@ -426,8 +479,8 @@ class MouselabEnv(gym.Env):
         
         dot = Digraph()
         for x, ys in enumerate(self.tree):
-            r = self._state[x]
-            observed = not hasattr(self._state[x], 'sample')
+            r = self.node_reward(self._state, x)
+            observed = not hasattr(r, 'sample')
             c = color(r) if observed else 'grey'
             l = str(round(r, 2)) if observed else str(x)
             dot.node(str(x), label=l, style='filled', color=c)
