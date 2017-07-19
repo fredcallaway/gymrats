@@ -176,11 +176,20 @@ class MetaBestFirstSearchPolicy(Policy):
             assert 0, 'no frontier'
 
 
+def state_feature(func):
+    func = memoize(func)
+    def wrapped(self, state=None):
+        state = state if state is not None else self._state
+        return func(self, state)
+    return wrapped
+
+
+Node = namedtuple('Node', ['reward', 'children'])
 
 class MouselabEnv(gym.Env):
     """MetaMDP for a tree with a discrete unobserved reward function."""
     metadata = {'render.modes': ['human', 'array']}
-    term_state = None
+    term_state = '__term_state__'
     def __init__(self, branch=2, height=2, reward=None, cost=0, ground_truth=None):
         self.branch = branch
         if hasattr(self.branch, '__len__'):
@@ -194,7 +203,8 @@ class MouselabEnv(gym.Env):
         self.ground_truth = ground_truth
 
         self.tree = self._build_tree()
-        self.init = (0,) + (self.reward,) * (len(self.tree) - 1)
+        # self.init = (0,) + (self.reward,) * (len(self.tree) - 1)
+        self.init = self._build_state()
         self.term_action = len(self.tree)
         self.reset()
 
@@ -231,6 +241,34 @@ class MouselabEnv(gym.Env):
         s[action] = result
         return tuple(s)
 
+    def actions(self, state):
+        """Yields actions that can be taken in the given state.
+
+        Actions include observing the value of each unobserved node and terminating.
+        """
+        if state is self.term_state:
+            return
+        for i, v in enumerate(state):
+            if v is self.reward:
+                yield i
+        yield self.term_action
+
+    def results(self, state, action):
+        """Returns a list of possible results of taking action in state.
+
+        Each outcome is (probability, next_state, reward).
+        """
+        if action == self.term_action:
+            # R = self.term_reward()
+            # S1 = Categorical([self.term_state])
+            # return cross(S1, R)
+            yield (1, self.term_state, self.expected_term_reward())
+        else:
+            for r, p in state[action]:
+                s1 = list(state)
+                s1[action] = r
+                yield (p, tuple(s1), self.cost)
+
     def features(self, state=None):
         state = state if state is not None else self._state
         if state is None:
@@ -256,6 +294,10 @@ class MouselabEnv(gym.Env):
         assert state is not None
         return self.node_value(0, state)
 
+    @state_feature
+    def expected_term_reward(self, state):
+        return self.term_reward(state).expectation()
+
     def node_value(self, node, state=None):
         """A distribution over total rewards after the given node."""
         state = state if state is not None else self._state
@@ -273,26 +315,6 @@ class MouselabEnv(gym.Env):
         """A distribution of total expected rewards if this node is visited."""
         state = state if state is not None else self._state
         return self.node_value_to(node, state) + self.node_value(node, state)
-
-    # def node_value_omniscient(self, node, state=None):
-    #     """A distribution of the value of a node given knowledge of all rewards."""
-    #     state = state if state is not None else self._state
-    #     children = self.tree[node]
-    #     if children:
-    #         return dmax(self.node_value_omniscient(c) + state[c] for c in children)
-    #     else:
-    #         return PointMass(0)
-
-    # def node_quality_omniscient(self, node, state=None):
-    #     """A distribution of total expected rewards if this node is visited."""
-    #     state = state if state is not None else self._state
-    #     return self.node_value_to(node, state) + self.node_value_omniscient(node, state)
-
-    # def node_quality_observed(self, node, state=None):
-    #     """A distribution of total expected rewards if this node were observed."""
-    #     assert 0  # implementation is incorrect
-    #     state = state if state is not None else self._state
-    #     return self.node_value_to(node, state) + self.node_value_omniscient(node, state)
 
     def vpi(self, state=None):
         state = state if state is not None else self._state
@@ -319,23 +341,6 @@ class MouselabEnv(gym.Env):
         return dmax((self.node_value_after_observe(obs, n1, state) + r(n1)
                      for n1 in self.tree[node]),
                     default=PointMass(0))
-
-    # def node_value_after_observe_(self, obs, node, state=None):
-    #     """A distribution over the expected value of node, after observing obs."""
-    #     state = state if state is not None else self._state
-
-    #     def r(n):
-    #         if n == obs:
-    #             return state[n]
-    #         else:
-    #             return expectation(state[n])
-
-    #     return dmax((self.node_value_after_observe(obs, n1, state) + r(n1)
-    #                  for n1 in self.tree[node]),
-    #                 default=PointMass(0))
-
-    def is_ancestor(self, ancestor, node):
-        assert 0
 
     def path_to(self, node, start=0):
         path = [start]
@@ -365,14 +370,6 @@ class MouselabEnv(gym.Env):
 
         return rec([start])
 
-    def subtree(self, state, n):
-        """Returns the substree of the belief state with root n."""
-        assert 0
-        if not self.tree[n]:  # leaf node
-            return state[n]
-        c1, c2 = self.tree[n]
-        return tuple(state[i] for i in range(n, 2 * c2 - c1))
-
     def _build_tree(self):
         # num_node = np.cumsum(self.branch).sum() + 1
         def nodes_per_layer():
@@ -397,21 +394,14 @@ class MouselabEnv(gym.Env):
         expand(next(ids), 0)
         return T
 
-    # def _build_tree(self):
-    #     """Constructs the transition object-level MDP."""
-    #     num_node = self.branch ** (self.height+1) - 1
-    #     T = [[] for _ in range(num_node)]  # T[i] = [c1, c2] or [] if i is terminal
-    #     ids = it.count(0)
-    #     def expand(i, d):
-    #         if d == self.height:
-    #             return
-    #         for _ in range(self.branch):
-    #             next_i = next(ids)
-    #             T[i].append(next_i)
-    #             expand(next_i, d+1)
+    def _build_state(self):
+        def tree(branches):
+            if not branches:
+                return (self.reward, [])
+            children = tuple(tree(branches[1:]) for _ in range(branches[0]))
+            return (self.reward, children)
 
-    #     expand(next(ids), 0)
-    #     return T
+        return tree(self.branch)
 
     def _render(self, mode='notebook', close=False):
         from graphviz import Digraph
@@ -433,16 +423,13 @@ class MouselabEnv(gym.Env):
                 return '#8EBF87'
             else:
                 return '#F7BDC4'
-            # return '#9999ee'
-            # return rgb2hex(colormap.to_rgba(val))
         
-        # COLOR = {None: 'grey', np.inf: 'grey', 1: '#dd4444', 0: '#5555ee'}
         dot = Digraph()
         for x, ys in enumerate(self.tree):
             r = self._state[x]
             observed = not hasattr(self._state[x], 'sample')
             c = color(r) if observed else 'grey'
-            l = str(round(r, 2)) if observed else '?'
+            l = str(round(r, 2)) if observed else str(x)
             dot.node(str(x), label=l, style='filled', color=c)
             for y in ys:
                 dot.edge(str(x), str(y))
